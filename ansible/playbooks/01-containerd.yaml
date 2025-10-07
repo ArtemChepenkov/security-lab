@@ -1,0 +1,20 @@
+- name: Install containerd
+  hosts: k8s
+  become: true
+  tasks:
+    - name: Install containerd package
+      apt:
+        name: containerd
+        state: present
+    - name: Ensure /etc/containerd exists
+      file: path=/etc/containerd state=directory
+    - name: Generate default config
+      command: containerd config default
+      register: ctd_default
+      changed_when: false
+    - name: Write config with systemd cgroup enabled
+      copy:
+        dest: /etc/containerd/config.toml
+        content: "{{ ctd_default.stdout | default('') | regex_replace('SystemdCgroup = false', 'SystemdCgroup = true') }}"
+    - name: Restart containerd
+      systemd: name=containerd state=restarted enabled=yes

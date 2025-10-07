@@ -1,0 +1,13 @@
+- name: Install trivy binary on master
+  hosts: masters
+  become: true
+  tasks:
+    - name: Download trivy tar.gz
+      get_url:
+        url: "https://github.com/aquasecurity/trivy/releases/download/v{{ trivy_version }}/trivy_{{ trivy_version }}_Linux-64bit.tar.gz"
+        dest: /tmp/trivy.tar.gz
+    - name: Extract trivy
+      unarchive:
+        src: /tmp/trivy.tar.gz
+        dest: /usr/local/bin/
+        remote_src: yes

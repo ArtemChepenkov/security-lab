@@ -1,0 +1,94 @@
+- name: Add Kubernetes apt repo
+  hosts: k8s
+  become: true
+  tasks:
+    - name: Install required packages
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gpg
+        state: present
+        update_cache: yes
+
+    - name: Add Google Cloud apt key
+      shell: curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key | gpg --dearmor -o /usr/share/keyrings/kubernetes-archive-keyring.gpg
+      args:
+        creates: /usr/share/keyrings/kubernetes-archive-keyring.gpg
+
+    - name: Add Kubernetes apt repo
+      copy:
+        dest: /etc/apt/sources.list.d/kubernetes.list
+        content: |
+          deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+- name: Initialize kubeadm control-plane
+  hosts: masters
+  become: true
+  tasks:
+    - name: Install kube packages (assume apt repo already added)
+      apt:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: present
+
+    - name: kubeadm init (run once)
+      command: kubeadm init --pod-network-cidr={{ pod_network_cidr }}
+      args:
+        creates: /etc/kubernetes/admin.conf
+      register: kubeadm_init
+
+    - name: Ensure .kube dir
+      file:
+        path: /home/{{ ansible_user }}/.kube
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: 0700
+
+    - name: Copy admin.conf to user kubeconfig
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/{{ ansible_user }}/.kube/config
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0600'
+        remote_src: true
+
+    - name: Generate join command and save to file
+      shell: kubeadm token create --print-join-command > /tmp/join-command.sh
+      args:
+        creates: /tmp/join-command.sh
+      become: true
+      run_once: true
+
+    - name: Check join command file
+      command: cat /tmp/join-command.sh
+      register: join_file
+      changed_when: false
+      run_once: true
+
+    - debug:
+        msg: "{{ join_file.stdout }}"
+
+
+    - name: Write join command to file on master
+      copy:
+        content: "{{ join_cmd.stdout }}"
+        dest: /tmp/join-command.sh
+        mode: '0755'
+      run_once: true
+
+    - name: Fetch join-command.sh from master to local
+      fetch:
+        src: /tmp/join-command.sh
+        dest: ./artifacts/join-command.sh
+        flat: yes
+      run_once: true

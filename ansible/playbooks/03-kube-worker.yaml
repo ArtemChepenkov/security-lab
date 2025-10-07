@@ -1,0 +1,17 @@
+- name: Join workers to Kubernetes cluster
+  hosts: workers
+  become: true
+  tasks:
+    - name: Copy join command script to worker
+      copy:
+        src: "{{ playbook_dir }}/artifacts/join-command.sh"
+        dest: /tmp/join-command.sh
+        mode: '0755'
+
+    - name: Run kubeadm join directly
+      command: "{{ lookup('file', playbook_dir + '/artifacts/join-command.sh') }}"
+      register: join_result
+      become: true
+      retries: 3
+      delay: 10
+      until: join_result.rc == 0

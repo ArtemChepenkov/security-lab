@@ -1,0 +1,9 @@
+[masters]
+130.193.53.6 pod_network_cidr=10.244.0.0/16
+
+[workers]
+130.193.42.123
+
+[k8s:children]
+masters
+workers
