@@ -2,16 +2,56 @@
   hosts: workers
   become: true
   tasks:
+    - name: Install required packages
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gpg
+        state: present
+        update_cache: yes
+
+    - name: Add Kubernetes apt repository (official pkgs.k8s.io)
+      shell: |
+        mkdir -p /etc/apt/keyrings
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+        echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /" > /etc/apt/sources.list.d/kubernetes.list
+      args:
+        creates: /etc/apt/sources.list.d/kubernetes.list
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install kube packages
+      apt:
+        name:
+          - kubeadm
+          - kubelet
+          - kubectl
+        state: present
+
     - name: Copy join command script to worker
       copy:
         src: "{{ playbook_dir }}/artifacts/join-command.sh"
         dest: /tmp/join-command.sh
         mode: '0755'
 
-    - name: Run kubeadm join directly
-      command: "{{ lookup('file', playbook_dir + '/artifacts/join-command.sh') }}"
+    - name: Reset kubeadm before join
+      shell: |
+        kubeadm reset -f
+        systemctl stop kubelet || true
+        systemctl stop containerd || true
+        rm -rf /etc/kubernetes /var/lib/kubelet /var/lib/cni /etc/cni/net.d
+        rm -rf /etc/kubernetes/pki || true
+        systemctl start containerd || true
+      ignore_errors: true
+
+    - name: Run join command
+      command: bash /tmp/join-command.sh
       register: join_result
-      become: true
       retries: 3
       delay: 10
       until: join_result.rc == 0
+      become: true

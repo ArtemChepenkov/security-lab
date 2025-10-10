@@ -12,16 +12,13 @@
         state: present
         update_cache: yes
 
-    - name: Add Google Cloud apt key
-      shell: curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key | gpg --dearmor -o /usr/share/keyrings/kubernetes-archive-keyring.gpg
+    - name: Add Kubernetes apt repository (official pkgs.k8s.io)
+      shell: |
+        mkdir -p /etc/apt/keyrings
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+        echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /" > /etc/apt/sources.list.d/kubernetes.list
       args:
-        creates: /usr/share/keyrings/kubernetes-archive-keyring.gpg
-
-    - name: Add Kubernetes apt repo
-      copy:
-        dest: /etc/apt/sources.list.d/kubernetes.list
-        content: |
-          deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /
+        creates: /etc/apt/sources.list.d/kubernetes.list
 
     - name: Update apt cache
       apt:
@@ -31,7 +28,7 @@
   hosts: masters
   become: true
   tasks:
-    - name: Install kube packages (assume apt repo already added)
+    - name: Install kube packages
       apt:
         name:
           - kubelet
@@ -44,6 +41,7 @@
       args:
         creates: /etc/kubernetes/admin.conf
       register: kubeadm_init
+      run_once: true
 
     - name: Ensure .kube dir
       file:
@@ -62,27 +60,29 @@
         mode: '0600'
         remote_src: true
 
-    - name: Generate join command and save to file
-      shell: kubeadm token create --print-join-command > /tmp/join-command.sh
-      args:
-        creates: /tmp/join-command.sh
-      become: true
+    - name: Generate join token
+      command: kubeadm token create
+      register: join_token
       run_once: true
 
-    - name: Check join command file
-      command: cat /tmp/join-command.sh
-      register: join_file
+    - name: Get current CA cert hash
+      shell: |
+        openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt \
+        | openssl rsa -pubin -outform der 2>/dev/null \
+        | openssl dgst -sha256 -hex \
+        | sed 's/^.* //'
+      register: ca_hash
       changed_when: false
       run_once: true
 
-    - debug:
-        msg: "{{ join_file.stdout }}"
-
-
-    - name: Write join command to file on master
+    - name: Write final join command script with sudo and verbosity
       copy:
-        content: "{{ join_cmd.stdout }}"
         dest: /tmp/join-command.sh
+        content: |
+          kubeadm join 10.10.0.38:6443 \
+            --token {{ join_token.stdout }} \
+            --discovery-token-ca-cert-hash sha256:{{ ca_hash.stdout }} \
+            -v=6
         mode: '0755'
       run_once: true
 
