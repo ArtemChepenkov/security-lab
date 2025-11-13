@@ -1,17 +1,106 @@
-- name: Install trivy binary on master
+---
+- name: Install Trivy and scan Kubernetes (k8s + pod image) on master
   hosts: masters
   become: true
   vars:
     trivy_version: "0.67.2"
+    kubeconfig_path: /etc/kubernetes/admin.conf
+    remote_artifacts_dir: /var/artifacts/trivy
+    local_artifacts_base: "./artifacts"
+    juice_namespace: default
+    juice_label_selector: "app=juice-shop"
+    severity_list: "HIGH,CRITICAL"
+
+    ts: "{{ ansible_date_time.epoch }}"
+    trivy_tmp_tar: /tmp/trivy.tar.gz
+
   tasks:
     - name: Download trivy tar.gz
       get_url:
         url: "https://github.com/aquasecurity/trivy/releases/download/v{{ trivy_version }}/trivy_{{ trivy_version }}_Linux-64bit.tar.gz"
-        dest: /tmp/trivy.tar.gz
+        dest: "{{ trivy_tmp_tar }}"
 
-    - name: Extract trivy
+    - name: Extract trivy to local bin
       unarchive:
-        src: /tmp/trivy.tar.gz
+        src: "{{ trivy_tmp_tar }}"
         dest: /usr/local/bin/
         remote_src: yes
 
+    - name: Create remote artifacts directory
+      file:
+        path: "{{ remote_artifacts_dir }}"
+        state: directory
+
+    - name: Run trivy k8s scan (JSON)
+      command: >
+        trivy k8s
+        --kubeconfig {{ kubeconfig_path }}
+        --include-namespaces {{ juice_namespace }}
+        --severity {{ severity_list }}
+        -f json
+        -o {{ remote_artifacts_dir }}/trivy-k8s-{{ ts }}.json
+      register: trivy_k8s_json
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      changed_when: false
+      failed_when: trivy_k8s_json.rc not in [0]
+
+    - name: Get juice-shop pod name (first matching)
+      command: >
+        kubectl get pods -n {{ juice_namespace }} -l {{ juice_label_selector }} -o jsonpath='{.items[0].metadata.name}'
+        --kubeconfig {{ kubeconfig_path }}
+      register: juice_pod_name
+      changed_when: false
+      failed_when: false
+
+    - name: Debug pod name
+      debug:
+        msg: "Found pod: '{{ juice_pod_name.stdout }}'"
+      when: juice_pod_name.stdout != ""
+
+    - name: Get image used by juice-shop pod
+      command: >
+        kubectl get pod {{ juice_pod_name.stdout }} -n {{ juice_namespace }}
+        -o jsonpath='{.spec.containers[0].image}'
+        --kubeconfig {{ kubeconfig_path }}
+      register: juice_pod_image
+      when: juice_pod_name.stdout != ""
+      changed_when: false
+      failed_when: false
+
+    - name: Debug pod image
+      debug:
+        msg: "Image for pod {{ juice_pod_name.stdout }} is '{{ juice_pod_image.stdout }}'"
+      when: juice_pod_image is defined and juice_pod_image.stdout != ""
+
+    - name: Scan juice pod image (JSON) if image found
+      command: >
+        /usr/local/bin/trivy image --severity {{ severity_list }}
+        -f json -o {{ remote_artifacts_dir }}/trivy-image-{{ ts }}.json {{ juice_pod_image.stdout }}
+      when:
+        - juice_pod_image is defined
+        - juice_pod_image.stdout != ""
+      register: trivy_image_json
+      changed_when: false
+      failed_when: trivy_image_json.rc not in [0]
+
+    - name: Fetch trivy k8s JSON report
+      fetch:
+        src: /var/artifacts/trivy/trivy-k8s-{{ ts }}.json"
+        dest: "./artifacts/trivy-k8s-{{ ts }}.json"
+        flat: yes
+      ignore_errors: yes
+
+    - name: Fetch trivy image JSON report (if created)
+      fetch:
+        src: "{{ remote_artifacts_dir }}/trivy-image-{{ ts }}.json"
+        dest: "./artifacts/trivy-image-{{ ts }}.json"
+        flat: yes
+      when: juice_pod_image is defined and juice_pod_image.stdout != ""
+      ignore_errors: yes
+
+    - name: Remove downloaded trivy tar
+      file:
+        path: "{{ trivy_tmp_tar }}"
+        state: absent
+      ignore_errors: yes
