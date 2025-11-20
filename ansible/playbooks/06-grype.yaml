@@ -1,0 +1,63 @@
+- name: Install Syft and Grype + Generate SBOM + Save Artifacts
+  hosts: masters
+  become: true
+
+  vars:
+    syft_version: "1.38.0"
+    grype_version: "0.104.0"
+    artifacts_dir: /var/artifacts/grype
+    image_to_scan: "bkimminich/juice-shop:latest"
+
+  tasks:
+    - name: Create artifacts directory
+      file:
+        path: "{{ artifacts_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Download Syft
+      get_url:
+        url: https://github.com/anchore/syft/releases/download/v{{ syft_version }}/syft_{{ syft_version }}_linux_amd64.tar.gz
+        dest: /tmp/syft.tar.gz
+
+    - name: Extract Syft
+      unarchive:
+        src: /tmp/syft.tar.gz
+        dest: /usr/local/bin/
+        remote_src: yes
+
+    - name: Download Grype
+      get_url:
+        url: https://github.com/anchore/grype/releases/download/v{{ grype_version }}/grype_{{ grype_version }}_linux_amd64.tar.gz
+        dest: /tmp/grype.tar.gz
+
+    - name: Extract Grype
+      unarchive:
+        src: /tmp/grype.tar.gz
+        dest: /usr/local/bin/
+        remote_src: yes
+
+    - name: Generate SBOM with Syft
+      command: syft "{{ image_to_scan }}" -o cyclonedx-json
+      register: sbom_output
+
+    - name: Save SBOM to file
+      copy:
+        content: "{{ sbom_output.stdout }}"
+        dest: "{{ artifacts_dir }}/juice-sbom.json"
+
+    - name: Scan SBOM with Grype
+      command: grype sbom:"{{ artifacts_dir }}/juice-sbom.json" -o json
+      register: grype_output
+
+    - name: Save Grype report JSON
+      copy:
+        content: "{{ grype_output.stdout }}"
+        dest: "{{ artifacts_dir }}/juice-grype-report.json"
+    
+    - name: Fetch grype JSON report
+      fetch:
+        src: "{{ artifacts_dir }}/juice-grype-report.json"
+        dest: "./artifacts/juice-grype-report.json"
+        flat: yes
+      ignore_errors: yes

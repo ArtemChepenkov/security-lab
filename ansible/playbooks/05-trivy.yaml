@@ -20,7 +20,7 @@
         url: "https://github.com/aquasecurity/trivy/releases/download/v{{ trivy_version }}/trivy_{{ trivy_version }}_Linux-64bit.tar.gz"
         dest: "{{ trivy_tmp_tar }}"
 
-    - name: Extract trivy to local bin
+    - name: Extract trivy
       unarchive:
         src: "{{ trivy_tmp_tar }}"
         dest: /usr/local/bin/
