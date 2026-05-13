@@ -12,20 +12,11 @@ import yaml
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 
-from fastapi.middleware.cors import CORSMiddleware
-
 DB_PATH = "./data/scans.db"
 os.makedirs("./data", exist_ok=True)
 
 app = FastAPI(title="Security Scan API")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
 
 # =========================================================
 # DB
@@ -40,6 +31,7 @@ def init_db():
         id TEXT PRIMARY KEY,
         ts INTEGER,
         namespace TEXT,
+        release TEXT,
         status TEXT
     )
     """)
@@ -83,23 +75,21 @@ def run_cmd(cmd: List[str]):
     }
 
 
-#def create_scan(admission_control):
-def create_scan():
+def create_scan(release):
 
     scan_id = uuid.uuid4().hex[:8]
     namespace = f"scan-{scan_id}"
-    #if not admission_control:
+
     run_cmd(["kubectl", "create", "namespace", namespace])
-    #else:
-    #    run_cmd(["kubectl", "label", "namespace", namespace, "pod-security.kubernetes.io/warn=baseline"])
+
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
 
     cur.execute(
-        "INSERT INTO scans VALUES (?,?,?,?)",
-        (scan_id, int(time.time()*1000), namespace, "created")
+        "INSERT INTO scans VALUES (?,?,?,?,?)",
+        (scan_id, int(time.time()*1000), namespace, release, "created")
     )
-
+    print(release, flush=True)
     conn.commit()
     conn.close()
 
@@ -134,6 +124,66 @@ def save_finding(scan_id, scanner, severity, target, title):
     conn.commit()
     conn.close()
 
+
+
+def run_kube_bench_local(scan_id):
+    report_file = tempfile.mkstemp(suffix=".json")
+    print(report_file)
+    cmd = [
+        "sudo",
+        "kube-bench",
+        "run",
+        "--benchmark", "cis-1.9",
+        "--targets", "node,master,etcd,controlplane",
+        "--json"
+    ]
+
+    env = os.environ.copy()
+    env["KUBECONFIG"] = env.get("KUBECONFIG", os.path.expanduser("~/.kube/config"))
+
+    with open(report_file[1], "w") as f:
+        proc = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE, text=True, env=env)
+
+    if proc.returncode != 0:
+        print("kube-bench failed:", proc.stderr)
+        return
+
+    try:
+        with open(report_file[1]) as f:
+            data = json.load(f)
+    except Exception as e:
+        print("parse error:", e)
+        return
+
+    parse_kube_bench(scan_id, data)
+
+def parse_kube_bench(scan_id, data):
+
+    for control in data.get("Controls", []):
+        for test in control.get("tests", []):
+            for result in test.get("results", []):
+                status = result.get("status", "UNKNOWN")
+                desc = result.get("test_desc", "")
+                test_id = result.get("test_number", "")
+
+                if status == "PASS":
+                    continue
+
+                severity_map = {
+                    "FAIL": "HIGH",
+                    "WARN": "MEDIUM",
+                    "INFO": "LOW"
+                }
+
+                severity = severity_map.get(status, "LOW")
+
+                save_finding(
+                    scan_id,
+                    "kube-bench",
+                    severity,
+                    "cluster",
+                    f"{test_id}: {desc}"
+                )
 
 # =========================================================
 # GET IMAGES FROM PODS
@@ -201,65 +251,6 @@ def fake_scan(scan_id, images):
                     v.get("Title", v.get("VulnerabilityID"))
                 )
 
-def run_kube_bench_local(scan_id):
-    report_file = tempfile.mkstemp(suffix=".json")
-    print(report_file)
-    cmd = [
-        "sudo",
-        "kube-bench",
-        "run",
-        "--benchmark", "cis-1.9",
-        "--targets", "node,master,etcd,controlplane",
-        "--json"
-    ]
-
-    env = os.environ.copy()
-    env["KUBECONFIG"] = env.get("KUBECONFIG", os.path.expanduser("~/.kube/config"))
-
-    with open(report_file[1], "w") as f:
-        proc = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE, text=True, env=env)
-
-    if proc.returncode != 0:
-        print("kube-bench failed:", proc.stderr)
-        return
-
-    try:
-        with open(report_file[1]) as f:
-            data = json.load(f)
-    except Exception as e:
-        print("parse error:", e)
-        return
-
-    parse_kube_bench(scan_id, data)
-
-def parse_kube_bench(scan_id, data):
-
-    for control in data.get("Controls", []):
-        for test in control.get("tests", []):
-            for result in test.get("results", []):
-                status = result.get("status", "UNKNOWN")
-                desc = result.get("test_desc", "")
-                test_id = result.get("test_number", "")
-
-                if status == "PASS":
-                    continue
-
-                severity_map = {
-                    "FAIL": "HIGH",
-                    "WARN": "MEDIUM",
-                    "INFO": "LOW"
-                }
-
-                severity = severity_map.get(status, "LOW")
-
-                save_finding(
-                    scan_id,
-                    "kube-bench",
-                    severity,
-                    "cluster",
-                    f"{test_id}: {desc}"
-                )
-
 # =========================================================
 # START SCAN
 # =========================================================
@@ -268,15 +259,13 @@ def parse_kube_bench(scan_id, data):
 async def start_scan(
         release: str = Form(...),
         chart: UploadFile = File(...)
-#        admission_control: bool = Form(False)
 ):
 
     if not chart.filename.endswith(".tgz"):
         raise HTTPException(400, "chart must be tgz")
 
-#    scan_id, namespace = create_scan(admission_control)
-    scan_id, namespace = create_scan()
-    print("namespace created", flush=True)
+    scan_id, namespace = create_scan(release)
+
     tmp = tempfile.mkdtemp()
     chart_path = os.path.join(tmp, chart.filename)
 
@@ -301,14 +290,87 @@ async def start_scan(
 
     fake_scan(scan_id, images)
 
-    #if len(images) == 0:
-    #    raise HTTPException(400, "Нарушение admission control")
-
-
     return {
         "scan_id": scan_id,
         "namespace": namespace,
         "images": images
+    }
+
+
+@app.post("/scan/kube-bench")
+def run_kube_bench():
+
+    scan_id = uuid.uuid4().hex[:8]
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    cur.execute(
+        "INSERT INTO scans VALUES (?,?,?,?)",
+        (scan_id, int(time.time()*1000), "cluster-wide", "running")
+    )
+
+    conn.commit()
+    conn.close()
+
+    # запускаем kube-bench
+    res = run_cmd([
+        "kube-bench",
+        "run",
+        "--json"
+    ])
+
+    if res["code"] != 0:
+        return {
+            "scan_id": scan_id,
+            "error": res["stderr"]
+        }
+
+    data = json.loads(res["stdout"])
+
+    findings_count = 0
+
+    for control in data.get("Controls", []):
+        for group in control.get("groups", []):
+            for check in group.get("checks", []):
+
+                state = check.get("state")
+
+                if state not in ["FAIL", "WARN"]:
+                    continue
+
+                severity = "LOW"
+                if state == "FAIL":
+                    severity = "HIGH"
+                elif state == "WARN":
+                    severity = "MEDIUM"
+
+                save_finding(
+                    scan_id,
+                    "kube-bench",
+                    severity,
+                    check.get("id"),
+                    check.get("text")
+                )
+
+                findings_count += 1
+
+    # обновляем статус
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    cur.execute(
+        "UPDATE scans SET status=? WHERE id=?",
+        ("done", scan_id)
+    )
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "scan_id": scan_id,
+        "findings": findings_count,
+        "status": "done"
     }
 
 
@@ -396,29 +458,6 @@ def diff(scan1, scan2):
     return {
         "fixed": fixed,
         "new": new
-    }
-
-@app.post("/scan/kube")
-def start_kube_bench_scan():
-
-    scan_id = uuid.uuid4().hex[:8]
-
-    run_kube_bench_local(scan_id)
-
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-
-    cur.execute(
-        "UPDATE scans SET status=? WHERE id=?",
-        ("completed", scan_id)
-    )
-
-    conn.commit()
-    conn.close()
-
-    return {
-        "scan_id": scan_id,
-        "type": "kube-bench"
     }
 
 
