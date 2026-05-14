@@ -8,6 +8,8 @@ import tempfile
 import shutil
 from typing import List, Optional
 
+from fastapi.middleware.cors import CORSMiddleware
+
 import yaml
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
@@ -16,6 +18,15 @@ DB_PATH = "./data/scans.db"
 os.makedirs("./data", exist_ok=True)
 
 app = FastAPI(title="Security Scan API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 
 # =========================================================
