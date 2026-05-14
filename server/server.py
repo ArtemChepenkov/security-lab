@@ -20,8 +20,7 @@ os.makedirs("./data", exist_ok=True)
 app = FastAPI(title="Security Scan API")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -317,8 +316,13 @@ def run_kube_bench():
     cur = conn.cursor()
 
     cur.execute(
-        "INSERT INTO scans VALUES (?,?,?,?)",
-        (scan_id, int(time.time()*1000), "cluster-wide", "running")
+        "INSERT INTO scans VALUES (?,?,?,?,?)",
+        (
+            scan_id, 
+            int(time.time()*1000), 
+            "cluster-wide",
+            "kube-bench", 
+            "running")
     )
 
     conn.commit()
