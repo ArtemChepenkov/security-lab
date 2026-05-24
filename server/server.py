@@ -2,6 +2,7 @@ import os
 import json
 import time
 import uuid
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -9,16 +10,37 @@ import urllib.parse
 import urllib.request
 from typing import List, Optional, Any, Dict
 
+from fastapi import (
+    FastAPI, UploadFile, File, Form, HTTPException,
+    BackgroundTasks, Depends, Security, Query,
+)
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from fastapi.security import APIKeyHeader
 
 import yaml
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import JSONResponse
+
+# =========================================================
+# AUTH
+# =========================================================
+
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+async def verify_api_key(key: str = Security(_api_key_header)):
+    configured = os.environ.get("API_KEY", "")
+    if configured and key != configured:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+# =========================================================
+# APP
+# =========================================================
 
 DB_PATH = "./data/scans.db"
 os.makedirs("./data", exist_ok=True)
 
-app = FastAPI(title="Security Scan API")
+app = FastAPI(title="Security Scan API", dependencies=[Depends(verify_api_key)])
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,7 +48,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 
 # =========================================================
@@ -73,8 +94,7 @@ def init_db():
     )
     """)
 
-    # Миграция для уже существующей локальной БД, где таблица scan_findings
-    # была создана старой версией сервера.
+    # Migration for existing DBs created by older server versions.
     cur.execute("PRAGMA table_info(scan_findings)")
     existing_columns = {row[1] for row in cur.fetchall()}
     migrations = {
@@ -106,12 +126,25 @@ def init_db():
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS scan_sbom(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scan_id TEXT NOT NULL,
+        image TEXT NOT NULL,
+        format TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+    )
+    """)
+
     cur.execute("CREATE INDEX IF NOT EXISTS idx_findings_scan_severity ON scan_findings(scan_id, severity)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_findings_cve ON scan_findings(cve_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_vulns_severity ON vulnerabilities(severity)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_sbom_scan ON scan_sbom(scan_id)")
 
     conn.commit()
     conn.close()
+
 
 init_db()
 
@@ -122,24 +155,24 @@ init_db()
 
 def run_cmd(cmd: List[str]):
     proc = subprocess.run(cmd, capture_output=True, text=True)
-    return {
-        "code": proc.returncode,
-        "stdout": proc.stdout,
-        "stderr": proc.stderr
-    }
+    return {"code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
+
 
 SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"]
+
 
 def normalize_severity(value: Optional[str]) -> str:
     if not value:
         return "UNKNOWN"
-    value = value.upper()
-    return value if value in SEVERITY_ORDER else "UNKNOWN"
+    v = value.upper()
+    return v if v in SEVERITY_ORDER else "UNKNOWN"
+
 
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
 
 def row_to_dict(row):
     return dict(row) if row else None
@@ -161,8 +194,7 @@ def build_pagination(page: int, page_size: int):
     return page, page_size, offset
 
 
-def extract_cvss_from_trivy(vuln: Dict[str, Any]):
-    # Trivy может отдавать CVSS по разным источникам: nvd, redhat, ghsa и т.д.
+def extract_cvss_from_trivy(vuln: Dict[str, Any]) -> Optional[float]:
     cvss = vuln.get("CVSS") or {}
     for source in ("nvd", "redhat", "ghsa"):
         item = cvss.get(source)
@@ -173,6 +205,25 @@ def extract_cvss_from_trivy(vuln: Dict[str, Any]):
             return float(item["V3Score"])
     return None
 
+
+def extract_cvss_from_grype(vuln: Dict[str, Any]) -> Optional[float]:
+    for entry in vuln.get("cvss") or []:
+        score = entry.get("metrics", {}).get("baseScore")
+        if score is not None:
+            return float(score)
+    return None
+
+
+def _update_scan_status(scan_id: str, status: str):
+    conn = get_conn()
+    conn.execute("UPDATE scans SET status=? WHERE id=?", (status, scan_id))
+    conn.commit()
+    conn.close()
+
+
+# =========================================================
+# PERSISTENCE
+# =========================================================
 
 def upsert_vulnerability(
     cve_id: str,
@@ -188,10 +239,8 @@ def upsert_vulnerability(
 ):
     if not cve_id:
         return
-
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
+    conn.execute("""
         INSERT INTO vulnerabilities(
             cve_id, severity, cvss_score, title, description,
             published_at, modified_at, source, references_json, raw_json, updated_at
@@ -230,7 +279,6 @@ def fetch_nvd_cve(cve_id: str, api_key: Optional[str] = None):
     headers = {"User-Agent": "security-scan-api/1.0"}
     if api_key:
         headers["apiKey"] = api_key
-
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
@@ -241,7 +289,6 @@ def parse_nvd_item(item: Dict[str, Any]):
     metrics = cve.get("metrics", {})
     severity = "UNKNOWN"
     cvss_score = None
-
     for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
         metric = (metrics.get(key) or [None])[0]
         if metric:
@@ -249,11 +296,9 @@ def parse_nvd_item(item: Dict[str, Any]):
             severity = metric.get("baseSeverity") or cvss_data.get("baseSeverity") or severity
             cvss_score = cvss_data.get("baseScore")
             break
-
     descriptions = cve.get("descriptions") or []
     description = next((d.get("value") for d in descriptions if d.get("lang") == "en"), None)
-    references = [r.get("url") for r in cve.get("references", {}).get("referenceData", []) if r.get("url")]
-
+    references = [r.get("url") for r in (cve.get("references") or []) if r.get("url")]
     return {
         "cve_id": cve.get("id"),
         "severity": severity,
@@ -268,60 +313,44 @@ def parse_nvd_item(item: Dict[str, Any]):
     }
 
 
-def create_scan(release):
-
+def create_scan(release: str, namespace_override: Optional[str] = None) -> tuple:
     scan_id = uuid.uuid4().hex[:8]
-    namespace = f"scan-{scan_id}"
-
+    namespace = namespace_override or f"scan-{scan_id}"
     run_cmd(["kubectl", "create", "namespace", namespace])
-
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-
-    cur.execute(
+    conn = get_conn()
+    conn.execute(
         "INSERT INTO scans VALUES (?,?,?,?,?)",
-        (scan_id, int(time.time()*1000), namespace, release, "created")
+        (scan_id, int(time.time() * 1000), namespace, release, "created"),
     )
-    print(release, flush=True)
     conn.commit()
     conn.close()
-
     return scan_id, namespace
 
 
-def save_images(scan_id, images):
-
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-
+def save_images(scan_id: str, images: List[str]):
+    conn = get_conn()
     for img in images:
-        cur.execute(
-            "INSERT INTO scan_images(scan_id,image) VALUES (?,?)",
-            (scan_id, img)
-        )
-
+        conn.execute("INSERT INTO scan_images(scan_id, image) VALUES (?,?)", (scan_id, img))
     conn.commit()
     conn.close()
 
 
 def save_finding(
-    scan_id,
-    scanner,
-    severity,
-    target,
-    title,
-    cve_id=None,
-    pkg_name=None,
-    installed_version=None,
-    fixed_version=None,
-    cvss_score=None,
-    description=None,
-    references=None,
+    scan_id: str,
+    scanner: str,
+    severity: str,
+    target: str,
+    title: str,
+    cve_id: Optional[str] = None,
+    pkg_name: Optional[str] = None,
+    installed_version: Optional[str] = None,
+    fixed_version: Optional[str] = None,
+    cvss_score: Optional[float] = None,
+    description: Optional[str] = None,
+    references: Optional[List[str]] = None,
 ):
     conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute(
+    conn.execute(
         """
         INSERT INTO scan_findings(
             scan_id, scanner, severity, target, title, cve_id, pkg_name,
@@ -329,281 +358,293 @@ def save_finding(
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
-            scan_id,
-            scanner,
-            normalize_severity(severity),
-            target,
-            title,
-            cve_id,
-            pkg_name,
-            installed_version,
-            fixed_version,
-            cvss_score,
-            description,
-            json.dumps(references or []),
-        )
+            scan_id, scanner, normalize_severity(severity), target, title,
+            cve_id, pkg_name, installed_version, fixed_version,
+            cvss_score, description, json.dumps(references or []),
+        ),
     )
-
     conn.commit()
     conn.close()
 
 
-def run_kube_bench_local(scan_id):
-    report_file = tempfile.mkstemp(suffix=".json")
-    print(report_file)
-    cmd = [
-        "sudo",
-        "kube-bench",
-        "run",
-        "--benchmark", "cis-1.9",
-        "--targets", "node,master,etcd,controlplane",
-        "--json"
-    ]
+def save_sbom(scan_id: str, image: str, fmt: str, content: str):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO scan_sbom(scan_id, image, format, content, created_at) VALUES (?,?,?,?,?)",
+        (scan_id, image, fmt, content, int(time.time() * 1000)),
+    )
+    conn.commit()
+    conn.close()
 
-    env = os.environ.copy()
-    env["KUBECONFIG"] = env.get("KUBECONFIG", os.path.expanduser("~/.kube/config"))
 
-    with open(report_file[1], "w") as f:
-        proc = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE, text=True, env=env)
+# =========================================================
+# TRIVY SCANNER
+# =========================================================
 
-    if proc.returncode != 0:
-        print("kube-bench failed:", proc.stderr)
+def parse_trivy_findings(scan_id: str, image: str, data: Dict[str, Any]):
+    for r in data.get("Results") or []:
+        for v in r.get("Vulnerabilities") or []:
+            cve_id = v.get("VulnerabilityID")
+            cvss = extract_cvss_from_trivy(v)
+            refs = v.get("References") or []
+
+            save_finding(
+                scan_id=scan_id,
+                scanner="trivy",
+                severity=v.get("Severity", "UNKNOWN"),
+                target=image,
+                title=v.get("Title") or cve_id or "",
+                cve_id=cve_id,
+                pkg_name=v.get("PkgName"),
+                installed_version=v.get("InstalledVersion"),
+                fixed_version=v.get("FixedVersion"),
+                cvss_score=cvss,
+                description=v.get("Description"),
+                references=refs,
+            )
+
+            if cve_id:
+                upsert_vulnerability(
+                    cve_id=cve_id,
+                    severity=v.get("Severity"),
+                    cvss_score=cvss,
+                    title=v.get("Title"),
+                    description=v.get("Description"),
+                    references=refs,
+                    source="trivy",
+                )
+
+
+def run_trivy_image(scan_id: str, image: str):
+    res = run_cmd(["trivy", "image", "-f", "json", "--quiet", image])
+    if res["code"] != 0:
+        print(f"trivy failed for {image}: {res['stderr']}", flush=True)
         return
+    try:
+        data = json.loads(res["stdout"])
+    except json.JSONDecodeError as exc:
+        print(f"trivy JSON parse error for {image}: {exc}", flush=True)
+        return
+    parse_trivy_findings(scan_id, image, data)
+
+
+# =========================================================
+# GRYPE SCANNER
+# =========================================================
+
+def parse_grype_findings(scan_id: str, image: str, data: Dict[str, Any]):
+    for match in data.get("matches") or []:
+        vuln = match.get("vulnerability", {})
+        artifact = match.get("artifact", {})
+
+        cve_id = vuln.get("id")
+        severity = normalize_severity(vuln.get("severity", "UNKNOWN"))
+        cvss = extract_cvss_from_grype(vuln)
+        fix_versions = vuln.get("fix", {}).get("versions") or []
+        refs = vuln.get("urls") or []
+
+        save_finding(
+            scan_id=scan_id,
+            scanner="grype",
+            severity=severity,
+            target=image,
+            title=vuln.get("description") or cve_id or "",
+            cve_id=cve_id,
+            pkg_name=artifact.get("name"),
+            installed_version=artifact.get("version"),
+            fixed_version=", ".join(fix_versions) if fix_versions else None,
+            cvss_score=cvss,
+            description=vuln.get("description"),
+            references=refs,
+        )
+
+        if cve_id:
+            upsert_vulnerability(
+                cve_id=cve_id,
+                severity=severity,
+                cvss_score=cvss,
+                title=cve_id,
+                description=vuln.get("description"),
+                references=refs,
+                source="grype",
+            )
+
+
+def run_grype_image(scan_id: str, image: str):
+    # Prefer syft → grype (SBOM-based) for richer results; fall back to direct scan.
+    syft_res = run_cmd(["syft", image, "-o", "cyclonedx-json", "--quiet"])
+    sbom_path: Optional[str] = None
+
+    if syft_res["code"] == 0 and syft_res["stdout"].strip():
+        save_sbom(scan_id, image, "cyclonedx-json", syft_res["stdout"])
+        tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")
+        tmp.write(syft_res["stdout"])
+        tmp.close()
+        sbom_path = tmp.name
+        grype_target = f"sbom:{sbom_path}"
+    else:
+        grype_target = image
 
     try:
-        with open(report_file[1]) as f:
-            data = json.load(f)
-    except Exception as e:
-        print("parse error:", e)
+        res = run_cmd(["grype", grype_target, "-o", "json"])
+    finally:
+        if sbom_path:
+            os.unlink(sbom_path)
+
+    if res["code"] != 0:
+        print(f"grype failed for {image}: {res['stderr']}", flush=True)
         return
+    try:
+        data = json.loads(res["stdout"])
+    except json.JSONDecodeError as exc:
+        print(f"grype JSON parse error for {image}: {exc}", flush=True)
+        return
+    parse_grype_findings(scan_id, image, data)
 
-    parse_kube_bench(scan_id, data)
 
-def parse_kube_bench(scan_id, data):
+# =========================================================
+# KUBE-BENCH
+# =========================================================
 
-    for control in data.get("Controls", []):
-        for test in control.get("tests", []):
-            for result in test.get("results", []):
-                status = result.get("status", "UNKNOWN")
-                desc = result.get("test_desc", "")
-                test_id = result.get("test_number", "")
-
-                if status == "PASS":
+def _parse_kube_bench_json(scan_id: str, data: Dict[str, Any]):
+    for control in data.get("Controls") or []:
+        # kube-bench >= 0.7 uses groups → checks; older uses tests → results
+        groups = control.get("groups") or control.get("tests") or []
+        for group in groups:
+            checks = group.get("checks") or group.get("results") or []
+            for check in checks:
+                state = check.get("state") or check.get("status")
+                if state in (None, "PASS"):
                     continue
+                severity = {"FAIL": "HIGH", "WARN": "MEDIUM", "INFO": "LOW"}.get(state, "LOW")
+                check_id = check.get("id") or check.get("test_number") or "cluster"
+                text = check.get("text") or check.get("test_desc") or ""
+                save_finding(scan_id, "kube-bench", severity, "cluster", f"{check_id}: {text}")
 
-                severity_map = {
-                    "FAIL": "HIGH",
-                    "WARN": "MEDIUM",
-                    "INFO": "LOW"
-                }
 
-                severity = severity_map.get(status, "LOW")
+def _run_kube_bench_background(scan_id: str):
+    try:
+        res = run_cmd(["kube-bench", "run", "--json"])
+        if res["code"] != 0:
+            print(f"kube-bench failed: {res['stderr']}", flush=True)
+            _update_scan_status(scan_id, "failed")
+            return
+        data = json.loads(res["stdout"])
+        _parse_kube_bench_json(scan_id, data)
+        _update_scan_status(scan_id, "done")
+    except Exception as exc:
+        print(f"kube-bench {scan_id} error: {exc}", flush=True)
+        _update_scan_status(scan_id, "failed")
 
-                save_finding(
-                    scan_id,
-                    "kube-bench",
-                    severity,
-                    "cluster",
-                    f"{test_id}: {desc}"
-                )
+
+# =========================================================
+# HELM / IMAGE SCAN BACKGROUND TASK
+# =========================================================
+
+def _run_helm_scan_background(
+    scan_id: str,
+    namespace: str,
+    release: str,
+    chart_path: str,
+    tmp_dir: str,
+):
+    try:
+        _update_scan_status(scan_id, "running")
+
+        res = run_cmd(["helm", "upgrade", "--install", release, chart_path, "-n", namespace])
+        if res["code"] != 0:
+            print(f"helm failed for scan {scan_id}: {res['stderr']}", flush=True)
+            _update_scan_status(scan_id, "failed")
+            return
+
+        # Poll until pods are running (max 60 s).
+        images: List[str] = []
+        for _ in range(12):
+            time.sleep(5)
+            images = get_images(namespace)
+            if images:
+                break
+
+        if not images:
+            print(f"scan {scan_id}: no images found in namespace {namespace}", flush=True)
+            _update_scan_status(scan_id, "failed")
+            return
+
+        save_images(scan_id, images)
+
+        for img in images:
+            run_trivy_image(scan_id, img)
+            run_grype_image(scan_id, img)
+
+        _update_scan_status(scan_id, "done")
+    except Exception as exc:
+        print(f"scan {scan_id} error: {exc}", flush=True)
+        _update_scan_status(scan_id, "failed")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
 
 # =========================================================
 # GET IMAGES FROM PODS
 # =========================================================
 
-def get_images(namespace):
-
-    res = run_cmd([
-        "kubectl",
-        "get",
-        "pods",
-        "-n",
-        namespace,
-        "-o",
-        "json"
-    ])
-
-    data = json.loads(res["stdout"])
-
+def get_images(namespace: str) -> List[str]:
+    res = run_cmd(["kubectl", "get", "pods", "-n", namespace, "-o", "json"])
+    try:
+        data = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return []
     images = []
-
-    for pod in data["items"]:
-        for c in pod["spec"]["containers"]:
-            images.append(c["image"])
-
+    for pod in data.get("items", []):
+        for c in pod.get("spec", {}).get("containers", []):
+            if c.get("image"):
+                images.append(c["image"])
     return list(set(images))
 
 
 # =========================================================
-# FAKE SCANNER (пример)
-# =========================================================
-
-def fake_scan(scan_id, images):
-
-    for img in images:
-
-        res = run_cmd([
-            "trivy",
-            "image",
-            "-f",
-            "json",
-            "--quiet",
-            img
-        ])
-
-        if res["code"] != 0:
-            print("Trivy failed:", res["stderr"])
-            continue
-
-        data = json.loads(res["stdout"])
-
-        results = data.get("Results", [])
-
-        for r in results:
-
-            vulns = r.get("Vulnerabilities", [])
-
-            for v in vulns:
-
-                save_finding(
-                    scan_id,
-                    "trivy",
-                    v.get("Severity", "UNKNOWN"),
-                    img,
-                    v.get("Title", v.get("VulnerabilityID"))
-                )
-
-# =========================================================
-# START SCAN
+# SCAN ENDPOINTS
 # =========================================================
 
 @app.post("/scan/start")
 async def start_scan(
-        release: str = Form(...),
-        chart: UploadFile = File(...)
+    background_tasks: BackgroundTasks,
+    release: str = Form(...),
+    chart: UploadFile = File(...),
 ):
-
     if not chart.filename.endswith(".tgz"):
-        raise HTTPException(400, "chart must be tgz")
+        raise HTTPException(400, "chart must be .tgz")
 
     scan_id, namespace = create_scan(release)
 
     tmp = tempfile.mkdtemp()
     chart_path = os.path.join(tmp, chart.filename)
-
+    contents = await chart.read()
     with open(chart_path, "wb") as f:
-        shutil.copyfileobj(chart.file, f)
+        f.write(contents)
 
-    run_cmd([
-        "helm",
-        "upgrade",
-        "--install",
-        release,
-        chart_path,
-        "-n",
-        namespace
-    ])
+    background_tasks.add_task(
+        _run_helm_scan_background, scan_id, namespace, release, chart_path, tmp
+    )
 
-    time.sleep(5)
-
-    images = get_images(namespace)
-
-    save_images(scan_id, images)
-
-    fake_scan(scan_id, images)
-
-    return {
-        "scan_id": scan_id,
-        "namespace": namespace,
-        "images": images
-    }
+    return {"scan_id": scan_id, "namespace": namespace, "status": "running"}
 
 
 @app.post("/scan/kube-bench")
-def run_kube_bench():
-
+def run_kube_bench(background_tasks: BackgroundTasks):
     scan_id = uuid.uuid4().hex[:8]
-
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-
-    cur.execute(
+    conn = get_conn()
+    conn.execute(
         "INSERT INTO scans VALUES (?,?,?,?,?)",
-        (
-            scan_id, 
-            int(time.time()*1000), 
-            "cluster-wide",
-            "kube-bench", 
-            "running")
+        (scan_id, int(time.time() * 1000), "cluster-wide", "kube-bench", "running"),
     )
-
     conn.commit()
     conn.close()
 
-    # запускаем kube-bench
-    res = run_cmd([
-        "kube-bench",
-        "run",
-        "--json"
-    ])
+    background_tasks.add_task(_run_kube_bench_background, scan_id)
 
-    if res["code"] != 0:
-        return {
-            "scan_id": scan_id,
-            "error": res["stderr"]
-        }
+    return {"scan_id": scan_id, "status": "running"}
 
-    data = json.loads(res["stdout"])
-
-    findings_count = 0
-
-    for control in data.get("Controls", []):
-        for group in control.get("groups", []):
-            for check in group.get("checks", []):
-
-                state = check.get("state")
-
-                if state not in ["FAIL", "WARN"]:
-                    continue
-
-                severity = "LOW"
-                if state == "FAIL":
-                    severity = "HIGH"
-                elif state == "WARN":
-                    severity = "MEDIUM"
-
-                save_finding(
-                    scan_id,
-                    "kube-bench",
-                    severity,
-                    check.get("id"),
-                    check.get("text")
-                )
-
-                findings_count += 1
-
-    # обновляем статус
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-
-    cur.execute(
-        "UPDATE scans SET status=? WHERE id=?",
-        ("done", scan_id)
-    )
-
-    conn.commit()
-    conn.close()
-
-    return {
-        "scan_id": scan_id,
-        "findings": findings_count,
-        "status": "done"
-    }
-
-
-# =========================================================
-# LIST SCANS
-# =========================================================
 
 @app.get("/scan/list")
 def list_scans(
@@ -613,27 +654,68 @@ def list_scans(
     page, page_size, offset = build_pagination(page, page_size)
     conn = get_conn()
     cur = conn.cursor()
-
     total = cur.execute("SELECT COUNT(*) AS c FROM scans").fetchone()["c"]
-    rows = cur.execute("""
-        SELECT id, ts, namespace, release, status
-        FROM scans
-        ORDER BY ts DESC
-        LIMIT ? OFFSET ?
-    """, (page_size, offset)).fetchall()
-
+    rows = cur.execute(
+        "SELECT id, ts, namespace, release, status FROM scans ORDER BY ts DESC LIMIT ? OFFSET ?",
+        (page_size, offset),
+    ).fetchall()
     conn.close()
+    return {"items": [row_to_dict(r) for r in rows], "page": page, "page_size": page_size, "total": total}
 
-    return {
-        "items": [row_to_dict(r) for r in rows],
-        "page": page,
-        "page_size": page_size,
-        "total": total,
-    }
 
-# =========================================================
-# SCAN DETAILS
-# =========================================================
+@app.get("/scan/{scan_id}/sbom")
+def get_scan_sbom(scan_id: str, image: Optional[str] = None):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if not cur.execute("SELECT id FROM scans WHERE id=?", (scan_id,)).fetchone():
+        conn.close()
+        raise HTTPException(404, "scan not found")
+
+    query = "SELECT id, image, format, created_at FROM scan_sbom WHERE scan_id=?"
+    params: List[Any] = [scan_id]
+    if image:
+        query += " AND image=?"
+        params.append(image)
+
+    rows = cur.execute(query, params).fetchall()
+    conn.close()
+    return {"items": [row_to_dict(r) for r in rows]}
+
+
+@app.get("/scan/{scan_id}/sbom/{sbom_id}/download")
+def download_sbom(scan_id: str, sbom_id: int):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT format, content FROM scan_sbom WHERE id=? AND scan_id=?",
+        (sbom_id, scan_id),
+    ).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(404, "SBOM not found")
+    return Response(
+        content=row["content"],
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="sbom-{sbom_id}.json"'},
+    )
+
+
+@app.get("/scan/diff/{scan1}/{scan2}")
+def diff(scan1: str, scan2: str):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    def _cves(scan_id: str):
+        rows = cur.execute(
+            "SELECT COALESCE(cve_id, title) AS key FROM scan_findings WHERE scan_id=?",
+            (scan_id,),
+        ).fetchall()
+        return {r["key"] for r in rows if r["key"]}
+
+    f1, f2 = _cves(scan1), _cves(scan2)
+    conn.close()
+    return {"fixed": list(f1 - f2), "new": list(f2 - f1)}
+
 
 @app.get("/scan/{scan_id}")
 def scan_details(
@@ -648,12 +730,16 @@ def scan_details(
     conn = get_conn()
     cur = conn.cursor()
 
-    scan = cur.execute("SELECT id, ts, namespace, release, status FROM scans WHERE id=?", (scan_id,)).fetchone()
+    scan = cur.execute(
+        "SELECT id, ts, namespace, release, status FROM scans WHERE id=?", (scan_id,)
+    ).fetchone()
     if not scan:
         conn.close()
         raise HTTPException(404, "scan not found")
 
-    images = cur.execute("SELECT image FROM scan_images WHERE scan_id=? ORDER BY image", (scan_id,)).fetchall()
+    images = cur.execute(
+        "SELECT image FROM scan_images WHERE scan_id=? ORDER BY image", (scan_id,)
+    ).fetchall()
 
     where = ["f.scan_id = ?"]
     params: List[Any] = [scan_id]
@@ -675,11 +761,9 @@ def scan_details(
 
     where_sql = " AND ".join(where)
 
-    total = cur.execute(f"""
-        SELECT COUNT(*) AS c
-        FROM scan_findings f
-        WHERE {where_sql}
-    """, params).fetchone()["c"]
+    total = cur.execute(
+        f"SELECT COUNT(*) AS c FROM scan_findings f WHERE {where_sql}", params
+    ).fetchone()["c"]
 
     findings = cur.execute(f"""
         SELECT
@@ -693,10 +777,8 @@ def scan_details(
         WHERE {where_sql}
         ORDER BY
             CASE f.severity
-                WHEN 'CRITICAL' THEN 1
-                WHEN 'HIGH' THEN 2
-                WHEN 'MEDIUM' THEN 3
-                WHEN 'LOW' THEN 4
+                WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2
+                WHEN 'MEDIUM'   THEN 3 WHEN 'LOW'  THEN 4
                 ELSE 5
             END,
             f.id DESC
@@ -714,13 +796,37 @@ def scan_details(
     return {
         "scan": row_to_dict(scan),
         "images": [r["image"] for r in images],
-        "findings": {
-            "items": items,
-            "page": page,
-            "page_size": page_size,
-            "total": total,
-        }
+        "findings": {"items": items, "page": page, "page_size": page_size, "total": total},
     }
+
+
+@app.delete("/scan/{scan_id}")
+def delete_scan(scan_id: str):
+    conn = get_conn()
+    cur = conn.cursor()
+    row = cur.execute("SELECT namespace FROM scans WHERE id=?", (scan_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "scan not found")
+    namespace = row["namespace"]
+    conn.close()
+
+    run_cmd(["kubectl", "delete", "namespace", namespace])
+
+    conn = get_conn()
+    conn.execute("DELETE FROM scans WHERE id=?", (scan_id,))
+    conn.execute("DELETE FROM scan_images WHERE scan_id=?", (scan_id,))
+    conn.execute("DELETE FROM scan_findings WHERE scan_id=?", (scan_id,))
+    conn.execute("DELETE FROM scan_sbom WHERE scan_id=?", (scan_id,))
+    conn.commit()
+    conn.close()
+
+    return {"deleted": scan_id}
+
+
+# =========================================================
+# VULNERABILITY ENDPOINTS
+# =========================================================
 
 @app.get("/vulnerabilities")
 def list_vulnerabilities(
@@ -756,10 +862,8 @@ def list_vulnerabilities(
         WHERE {where_sql}
         ORDER BY
             CASE severity
-                WHEN 'CRITICAL' THEN 1
-                WHEN 'HIGH' THEN 2
-                WHEN 'MEDIUM' THEN 3
-                WHEN 'LOW' THEN 4
+                WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2
+                WHEN 'MEDIUM'   THEN 3 WHEN 'LOW'  THEN 4
                 ELSE 5
             END,
             modified_at DESC
@@ -779,18 +883,14 @@ def list_vulnerabilities(
 @app.get("/vulnerabilities/{cve_id}")
 def vulnerability_details(cve_id: str):
     conn = get_conn()
-    cur = conn.cursor()
-    row = cur.execute("""
+    row = conn.execute("""
         SELECT cve_id, severity, cvss_score, title, description,
                published_at, modified_at, source, references_json, raw_json, updated_at
-        FROM vulnerabilities
-        WHERE cve_id=?
+        FROM vulnerabilities WHERE cve_id=?
     """, (cve_id,)).fetchone()
     conn.close()
-
     if not row:
         raise HTTPException(404, "vulnerability not found")
-
     item = row_to_dict(row)
     item["references"] = parse_json_list(item.pop("references_json", None))
     item["raw"] = json.loads(item.pop("raw_json") or "{}")
@@ -803,78 +903,9 @@ def sync_nvd_cve(cve_id: str, api_key: Optional[str] = None):
         data = fetch_nvd_cve(cve_id, api_key=api_key)
     except Exception as exc:
         raise HTTPException(502, f"NVD sync failed: {exc}")
-
     items = data.get("vulnerabilities") or []
     if not items:
         raise HTTPException(404, "CVE not found in NVD")
-
     parsed = parse_nvd_item(items[0])
     upsert_vulnerability(**parsed)
-
     return {"synced": parsed["cve_id"], "source": "nvd"}
-
-
-
-# =========================================================
-# DIFF SCANS
-# =========================================================
-
-@app.get("/scan/diff/{scan1}/{scan2}")
-def diff(scan1, scan2):
-
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-
-    cur.execute("""
-    SELECT title FROM scan_findings
-    WHERE scan_id=?
-    """, (scan1,))
-
-    f1 = set(r[0] for r in cur.fetchall())
-
-    cur.execute("""
-    SELECT title FROM scan_findings
-    WHERE scan_id=?
-    """, (scan2,))
-
-    f2 = set(r[0] for r in cur.fetchall())
-
-    conn.close()
-
-    fixed = list(f1 - f2)
-    new = list(f2 - f1)
-
-    return {
-        "fixed": fixed,
-        "new": new
-    }
-
-
-# =========================================================
-# DELETE SCAN
-# =========================================================
-
-@app.delete("/scan/{scan_id}")
-def delete_scan(scan_id):
-
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-
-    cur.execute("SELECT namespace FROM scans WHERE id=?", (scan_id,))
-    ns = cur.fetchone()
-
-    if not ns:
-        raise HTTPException(404)
-
-    namespace = ns[0]
-
-    run_cmd(["kubectl", "delete", "namespace", namespace])
-
-    cur.execute("DELETE FROM scans WHERE id=?", (scan_id,))
-    cur.execute("DELETE FROM scan_images WHERE scan_id=?", (scan_id,))
-    cur.execute("DELETE FROM scan_findings WHERE scan_id=?", (scan_id,))
-
-    conn.commit()
-    conn.close()
-
-    return {"deleted": scan_id}
