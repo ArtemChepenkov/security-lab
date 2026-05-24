@@ -3,10 +3,13 @@ import './style/App.css'
 import './style/button.css'
 import LoadImageModal from "./scan/LoadImageModal";
 import ScanList from "./scan/ScanList";
+import {ScanResults} from "./scan/ScanPage";
 
 function Home() {
     const [isLoaderOpen, setLoaderOpen] = useState<boolean>(false);
     const [isScanListOpen, setScanListOpen] = useState<boolean>(true);
+    const [selectedScanId, setSelectedScanId] = useState<string | null>(null);
+
 
     return (
         <div className="App">
@@ -32,14 +35,49 @@ function Home() {
                         scan kube
                     </button>
 
-                    <button
-                        className="action-btn"
-                        onClick={()=> isScanListOpen? setScanListOpen(false):setScanListOpen(true)}>
-                        {isScanListOpen ? "hide scan list" : "show scan list"}
-                    </button>
+                    {!selectedScanId && (
+                        <button
+                            className="action-btn"
+                            onClick={() =>
+                                setScanListOpen(
+                                    !isScanListOpen
+                                )
+                            }
+                        >
+                            {isScanListOpen
+                                ? "hide scan list"
+                                : "show scan list"}
+                        </button>
+                    )}
+
+                    {selectedScanId && (
+                        <button
+                            className="action-btn"
+                            onClick={() =>
+                                setSelectedScanId(
+                                    null
+                                )
+                            }
+                        >
+                            back
+                        </button>
+                    )}
                 </div>
                 <div className='body-main'>
-                    <ScanList isOpen={isScanListOpen}/>
+                    {!selectedScanId ? (
+                        <ScanList
+                            isOpen={isScanListOpen}
+                            onSelectScan={
+                                setSelectedScanId
+                            }
+                        />
+                    ) : (
+                        <ScanResults
+                            scanId={
+                                selectedScanId
+                            }
+                        />
+                    )}
                 </div>
             </div>
         </div>

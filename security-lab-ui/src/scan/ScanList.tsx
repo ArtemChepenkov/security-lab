@@ -1,17 +1,18 @@
 import React, {useEffect, useState} from "react";
-import {getAllScans, ScanRow} from "./scan-api";
+import {getAllScans} from "./scan-api";
 import '../style/button.css'
 import '../style/scan-list.css'
+import {ScanRow} from "./types";
 
 interface ScanListProps {
     isOpen: boolean;
+    onSelectScan: (scanId: string) => void;
 }
 
-const ScanList: React.FC<ScanListProps> = ({isOpen})=> {
+const ScanList: React.FC<ScanListProps> = ({isOpen, onSelectScan})=> {
 
     const [data, setData] = useState<ScanRow[]>([]);
     const [loading, setLoading] = useState(false);
-    const [activeRow, setActiveRow] = useState<string | null>(null);
 
     useEffect(() => {
         const loadData = async () => {
@@ -42,15 +43,15 @@ const ScanList: React.FC<ScanListProps> = ({isOpen})=> {
                 <tr>
                     <th>Scan ID</th>
                     <th>Scan name</th>
+                    <th>Namespace</th>
                     <th>Status</th>
                 </tr>
                 </thead>
 
                 <tbody>
                 {data.map(
-                    ([scanId, __, _, name, status]) => {
-                        const isActive =
-                            activeRow === scanId;
+                    ([scanId, __, namespase, name, status]) => {
+
                         return (
                             <tr
                                 key={scanId}
@@ -59,19 +60,14 @@ const ScanList: React.FC<ScanListProps> = ({isOpen})=> {
                                 <td>
                                     <button
                                         className="scan-button"
-                                        onClick={() =>
-                                            setActiveRow(
-                                                isActive
-                                                    ? null
-                                                    : scanId
-                                            )
-                                        }
+                                        onClick={() => onSelectScan(scanId)}
                                     >
                                         {scanId}
                                     </button>
                                 </td>
 
                                 <td>{name}</td>
+                                <td>{namespase}</td>
 
                                 <td>
                                     <span className="status-badge">
