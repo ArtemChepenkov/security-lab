@@ -7,12 +7,12 @@ import subprocess
 import tempfile
 import urllib.parse
 import urllib.request
+import shutil
 from typing import List, Optional, Any, Dict
-
 from fastapi.middleware.cors import CORSMiddleware
 
 import yaml
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 DB_PATH = "./data/scans.db"
@@ -26,8 +26,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
 
 # =========================================================
 # DB
@@ -466,12 +464,23 @@ def fake_scan(scan_id, images):
             for v in vulns:
 
                 save_finding(
-                    scan_id,
-                    "trivy",
-                    v.get("Severity", "UNKNOWN"),
-                    img,
-                    v.get("Title", v.get("VulnerabilityID"))
-                )
+                    scan_id=scan_id,
+                    scanner="trivy",
+                    severity=v.get("Severity", "UNKNOWN"),
+                    target=img,
+                    title=v.get("Title") or v.get("VulnerabilityID"),
+
+                    cve_id=v.get("VulnerabilityID"),
+                    pkg_name=v.get("PkgName"),
+                    installed_version=v.get("InstalledVersion"),
+                    fixed_version=v.get("FixedVersion"),
+
+                    cvss_score=extract_cvss_from_trivy(v),
+
+                    description=v.get("Description"),
+
+                    references=v.get("References", [])
+            )
 
 # =========================================================
 # START SCAN
