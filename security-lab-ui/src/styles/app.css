@@ -377,6 +377,49 @@ tr[data-active="true"] {
   background: var(--danger-soft, #eef2ff);
 }
 
+.combobox {
+  position: relative;
+  display: block;
+}
+
+.combobox input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.combobox__menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 240px;
+  overflow-y: auto;
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+}
+
+.combobox__option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: none;
+  background: white;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.combobox__option:hover {
+  background: var(--danger-soft, #f1f5f9);
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

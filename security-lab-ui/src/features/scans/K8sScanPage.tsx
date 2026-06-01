@@ -4,6 +4,7 @@ import { getNamespaces, startK8sScan } from '../../api/scan';
 import { Button } from '../../components/Button';
 import type { ScanItem } from '../../types';
 import { LaunchedScansTable } from './LaunchedScansTable';
+import { NamespaceCombobox } from './NamespaceCombobox';
 import { ScanFindingsPanel } from './ScanFindingsPanel';
 import { useScanFindings } from './useScanFindings';
 import { useScansOfType } from './useScansOfType';
@@ -64,15 +65,12 @@ export function K8sScanPage() {
                 <div className="form">
                     <label>
                         Namespace
-                        <input
-                            list="namespace-options"
+                        <NamespaceCombobox
                             value={namespace}
+                            options={namespaceOptions}
+                            onChange={setNamespace}
                             placeholder="default (пусто = весь кластер)"
-                            onChange={(event) => setNamespace(event.target.value)}
                         />
-                        <datalist id="namespace-options">
-                            {namespaceOptions.map((ns) => <option key={ns} value={ns} />)}
-                        </datalist>
                     </label>
                     <Button onClick={handleScan} disabled={loading}>
                         {loading ? 'Запуск…' : 'Сканировать namespace'}
