@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { securityLabApi } from '../../api/scan';
+import {getVulnerabilities, syncNvdCve} from '../../api/scan';
 import { SeverityBadge } from '../../components/Badge';
 import { Button } from '../../components/Button';
 import { EmptyState } from '../../components/EmptyState';
@@ -24,23 +24,31 @@ export function VulnerabilitiesPage() {
     setLoading(true);
     setError(null);
 
-    securityLabApi.getVulnerabilities({ page, pageSize, q, severity: severity === 'ALL' ? undefined : [severity] })
-      .then((response) => {
-        if (!alive) return;
-        setItems(response.items || []);
-        setPage(response.page || page);
-        setPageSize(response.page_size || pageSize);
-        setTotal(response.total || 0);
-      })
-      .catch((err) => alive && setError(err instanceof Error ? err.message : 'Failed to load vulnerabilities'))
-      .finally(() => alive && setLoading(false));
+    getVulnerabilities(
+        severity === 'ALL' ? undefined : [severity],
+        q,
+        page,
+        pageSize
+    )
+        .then((response) => {
+          if (!alive) return;
+          setItems(response.items || []);
+          setPage(response.page || page);
+          setPageSize(response.page_size || pageSize);
+          setTotal(response.total || 0);
+        })
+        .catch((err: unknown) => {
+          if (!alive) return;
+          setError(err instanceof Error ? err.message : 'Failed to load vulnerabilities');
+        })
+        .finally(() => alive && setLoading(false));
 
     return () => { alive = false; };
   }, [page, pageSize, q, severity]);
 
   async function sync(cve: string) {
     try {
-      await securityLabApi.syncNvd(cve);
+      await syncNvdCve(cve);
     } catch (err) {
       setError(err instanceof Error ? err.message : `Failed to sync ${cve}`);
     }

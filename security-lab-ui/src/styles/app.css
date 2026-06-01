@@ -32,8 +32,9 @@ button, input, select { font: inherit; }
 
 .app-shell {
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: 280px minmax(0, 1fr);
   min-height: 100vh;
+  overflow: hidden;
 }
 
 .sidebar {
@@ -87,16 +88,19 @@ button, input, select { font: inherit; }
 }
 
 .main {
-  padding: 32px;
-  overflow-x: hidden;
+  min-width: 0;
+  height: 100vh;
+  overflow: hidden;
+  padding: 20px;
 }
 
 .page {
+  height: 100%;
+  min-height: 0;
+  max-width: 1440px;
   display: flex;
   flex-direction: column;
-  gap: 22px;
-  max-width: 1440px;
-  margin: 0 auto;
+  gap: 20px;
 }
 
 .page__header {
@@ -168,12 +172,47 @@ button, input, select { font: inherit; }
   letter-spacing: -0.04em;
 }
 
-.table-card { overflow: hidden; }
+.table-card {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.table-card--compact .table-scroll {
+  max-height: 320px;
+  overflow: hidden;
+}
+
+.table-card--half .table-scroll {
+  max-height: 50vh;
+}
+
+.table-card--full .table-scroll {
+  max-height: calc(100vh - 160px);
+}
+
+.table-scroll {
+  overflow: auto;
+  min-height: 0;
+}
+
+.table-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
 
 .table-toolbar {
+  flex: 0 0 auto;
   justify-content: space-between;
-  padding: 18px 20px;
+  padding: 10px 10px;
   border-bottom: 1px solid var(--line);
+}
+
+.table-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
 }
 
 .table-toolbar h2, .images-card h2 {
@@ -275,7 +314,7 @@ input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 4px 
   align-items: center;
   justify-content: flex-end;
   gap: 12px;
-  padding: 16px 20px;
+  padding: 10px 20px 10px;
   border-top: 1px solid var(--line);
   color: var(--muted);
 }
@@ -296,20 +335,21 @@ input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 4px 
   padding: 30px;
   color: var(--muted);
   text-align: center;
+  align-content: center;
   background: white;
-  border: 1px dashed var(--line);
   border-radius: var(--radius);
 }
 
 .empty-state__icon {
   display: grid;
-  width: 54px;
-  height: 54px;
+  width: 60px;
+  height: 60px;
   place-items: center;
   color: #94a3b8;
   background: #f1f5f9;
   border-radius: 50%;
-  font-size: 24px;
+  font-size: 30px;
+  align-content: center;
 }
 
 .empty-state h3 { margin: 4px 0 0; color: var(--text); }
@@ -339,11 +379,12 @@ input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 4px 
 }
 
 .modal {
+  overflow-y: auto;
   width: min(520px, 100%);
-  overflow: hidden;
   background: white;
   border-radius: 22px;
   box-shadow: 0 30px 90px rgba(0, 0, 0, 0.24);
+  height: 100vh;
 }
 
 .modal__header {
@@ -359,6 +400,103 @@ input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 4px 
 
 .form { display: flex; flex-direction: column; gap: 16px; }
 .form label { display: flex; flex-direction: column; gap: 8px; color: #334155; font-weight: 800; }
+
+.compare-card {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 16px;
+  align-items: end;
+  padding: 20px;
+}
+
+.compare-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: #334155;
+  font-weight: 800;
+}
+
+.compare-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.cve-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cve-cell .btn {
+  min-height: 30px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+.link-button {
+  border: 0;
+  padding: 0;
+  color: var(--primary);
+  background: transparent;
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
+.modal--wide {
+  width: min(900px, 100%);
+}
+
+.nvd-details {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.nvd-section {
+  padding: 18px;
+}
+
+.nvd-section h3 {
+  margin: 0 0 10px;
+}
+
+.nvd-section p {
+  margin: 0 0 8px;
+  color: var(--muted);
+}
+
+.nvd-section ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.nvd-section a {
+  color: var(--primary);
+  font-weight: 700;
+}
+
+@media (max-width: 1100px) {
+  .compare-card {
+    grid-template-columns: 1fr;
+  }
+
+  .compare-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .cve-cell {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
 
 @media (max-width: 1100px) {
   body { min-width: 0; }

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { securityLabApi } from '../../api/scan';
+import { getScans } from '../../api/scan';
 import { StatusBadge } from '../../components/Badge';
 import type { ScanItem } from '../../types';
 import { formatDate } from '../../utils/format';
@@ -12,7 +12,7 @@ export function DashboardPage() {
 
     useEffect(() => {
         let alive = true;
-        securityLabApi.getScans({ page: 1, pageSize: 5 })
+        getScans(1, 5)
             .then((response) => {
                 if (!alive) return;
                 setScans(response.items || []);
@@ -25,7 +25,8 @@ export function DashboardPage() {
     const stats = useMemo(() => {
         const running = scans.filter((scan) => scan.status.toLowerCase() === 'running').length;
         const failed = scans.filter((scan) => scan.status.toLowerCase() === 'failed').length;
-        const done = scans.filter((scan) => scan.status.toLowerCase() === 'done').length;
+        let done = scans.filter((scan) => scan.status.toLowerCase() === 'done').length;
+        done += scans.filter((scan) => scan.status.toLowerCase() === 'created').length;
         return { total, running, failed, done };
     }, [scans, total]);
 
@@ -46,22 +47,24 @@ export function DashboardPage() {
                 <article className="metric-card"><span>Failed</span><strong>{stats.failed}</strong></article>
             </div>
 
-            <div className="card table-card">
+            <div className="card table-card table-card--compact">
                 <div className="table-toolbar"><h2>Latest scans</h2><Link className="table-link" to="/scans">View all</Link></div>
                 {loading ? <div className="loader">Loading dashboard…</div> : (
-                    <table>
-                        <thead><tr><th>Scan</th><th>Release</th><th>Status</th><th>Created</th></tr></thead>
-                        <tbody>
-                        {scans.map((scan) => (
-                            <tr key={scan.id}>
-                                <td><Link className="table-link" to={`/scans/${scan.id}`}>{scan.id}</Link></td>
-                                <td>{scan.release || '—'}</td>
-                                <td><StatusBadge status={scan.status} /></td>
-                                <td>{formatDate(scan.ts)}</td>
-                            </tr>
-                        ))}
-                        </tbody>
-                    </table>
+                    <div className="table-scroll">
+                        <table>
+                            <thead><tr><th>Scan</th><th>Release</th><th>Status</th><th>Created</th></tr></thead>
+                            <tbody>
+                            {scans.map((scan) => (
+                                <tr key={scan.id}>
+                                    <td><Link className="table-link" to={`/scans/${scan.id}`}>{scan.id}</Link></td>
+                                    <td>{scan.release || '—'}</td>
+                                    <td><StatusBadge status={scan.status} /></td>
+                                    <td>{formatDate(scan.ts)}</td>
+                                </tr>
+                            ))}
+                            </tbody>
+                        </table>
+                    </div>
                 )}
             </div>
         </section>

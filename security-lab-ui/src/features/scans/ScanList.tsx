@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { securityLabApi } from '../../api/scan';
+import {getScans} from '../../api/scan';
 import { StatusBadge } from '../../components/Badge';
 import { EmptyState } from '../../components/EmptyState';
 import { Pagination } from '../../components/Pagination';
@@ -27,7 +27,7 @@ export function ScanList() {
 
         setLoading(true);
         setError(null);
-        securityLabApi.getScans({ page, pageSize, q: debouncedQ })
+        getScans(page, pageSize)
             .then((response) => {
                 if (!alive) return;
                 setItems(response.items || []);
@@ -59,29 +59,32 @@ export function ScanList() {
             ) : null}
 
             {!!items.length && (
-                <div className="card table-card">
-                    <table>
-                        <thead>
-                        <tr>
-                            <th>Scan</th>
-                            <th>Release</th>
-                            <th>Namespace</th>
-                            <th>Status</th>
-                            <th>Created</th>
-                        </tr>
-                        </thead>
-                        <tbody>
-                        {items.map((scan) => (
-                            <tr key={scan.id}>
-                                <td><Link className="table-link" to={`/scans/${scan.id}`}>{scan.id}</Link></td>
-                                <td>{scan.release || '—'}</td>
-                                <td>{scan.namespace || '—'}</td>
-                                <td><StatusBadge status={scan.status} /></td>
-                                <td>{formatDate(scan.ts)}</td>
+                <div className="card table-card table-card--full">
+                    <div className="table-scroll">
+                        <table>
+                            <thead>
+                            <tr>
+                                <th>Scan</th>
+                                <th>Release</th>
+                                <th>Namespace</th>
+                                <th>Status</th>
+                                <th>Created</th>
                             </tr>
-                        ))}
-                        </tbody>
-                    </table>
+                            </thead>
+                            <tbody>
+                            {items.map((scan) => (
+                                <tr key={scan.id}>
+                                    <td><Link className="table-link" to={`/scans/${scan.id}`}>{scan.id}</Link></td>
+                                    <td>{scan.release || '—'}</td>
+                                    <td>{scan.namespace || '—'}</td>
+                                    <td><StatusBadge status={scan.status} /></td>
+                                    <td>{formatDate(scan.ts)}</td>
+                                </tr>
+                            ))}
+                            </tbody>
+                        </table>
+                    </div>
+
                     <Pagination page={page} pageSize={pageSize} total={total} onPageChange={setPage} onPageSizeChange={(size) => { setPageSize(size); setPage(1); }} />
                 </div>
             )}

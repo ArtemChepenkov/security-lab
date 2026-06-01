@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { securityLabApi } from '../../api/scan';
+import {deleteScan, getScanDetails, getNvdForCve } from '../../api/scan';
 import { SeverityBadge, StatusBadge } from '../../components/Badge';
 import { Button } from '../../components/Button';
 import { EmptyState } from '../../components/EmptyState';
 import { Pagination } from '../../components/Pagination';
-import type { Finding, FindingSeverity, ScanDetailsResponse } from '../../types';
+import type { Finding, FindingSeverity, ScanDetailsResponse, VulnerabilityDetails} from '../../types';
 import { formatDate, formatNumber } from '../../utils/format';
 
 const severities: Array<FindingSeverity | 'ALL'> = ['ALL', 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'UNKNOWN'];
@@ -18,15 +18,20 @@ export function ScanDetailsPage() {
     const [q, setQ] = useState('');
     const [page, setPage] = useState(1);
     const [pageSize, setPageSize] = useState(50);
+
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+
+    const [nvdOpen, setNvdOpen] = useState(false);
+    const [nvdLoading, setNvdLoading] = useState(false);
+    const [nvdData, setNvdData] = useState<VulnerabilityDetails | null>(null);
 
     useEffect(() => {
         let alive = true;
         setLoading(true);
         setError(null);
 
-        securityLabApi.getScan(scanId, { page, pageSize, q, severity: severity === 'ALL' ? undefined : [severity] })
+        getScanDetails(scanId, severity === 'ALL' ? undefined : [severity], 'trivy', q, page, pageSize )
             .then((response) => alive && setData(response))
             .catch((err) => alive && setError(err instanceof Error ? err.message : 'Failed to load scan'))
             .finally(() => alive && setLoading(false));
@@ -39,10 +44,26 @@ export function ScanDetailsPage() {
         if (!confirmed) return;
 
         try {
-            await securityLabApi.deleteScan(scanId);
+            await deleteScan(scanId);
             navigate('/scans');
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to delete scan');
+        }
+    }
+
+    async function handleOpenNvd(cveId: string) {
+        try {
+            setError(null);
+            setNvdLoading(true);
+            setNvdOpen(true);
+            setNvdData(null);
+
+            const res = await getNvdForCve(cveId);
+            setNvdData(res)
+        }  catch (err) {
+            setError(err instanceof Error ? err.message : 'Failed to load NVD data');
+        } finally {
+            setNvdLoading(false);
         }
     }
 
@@ -69,19 +90,28 @@ export function ScanDetailsPage() {
             {data && (
                 <>
                     <div className="summary-grid">
-                        <article className="metric-card"><span>Status</span><strong><StatusBadge status={data.scan.status} /></strong></article>
-                        <article className="metric-card"><span>Images</span><strong>{data.images.length}</strong></article>
-                        <article className="metric-card"><span>Findings</span><strong>{total}</strong></article>
+                        <article className="metric-card">
+                            <span>Status</span>
+                            <strong>
+                                <StatusBadge status={data.scan.status} />
+                            </strong>
+                        </article>
+                        <article className="metric-card">
+                            <span>Images</span>
+                            <strong>
+                                {data.images.length}
+                                <div className="chip-list">
+                                    {data.images.map((image) => <span className="chip" key={image}>{image}</span>)}
+                                </div>
+                            </strong>
+                        </article>
+                        <article className="metric-card">
+                            <span>Findings</span>
+                            <strong>{total}</strong>
+                        </article>
                     </div>
 
-                    <div className="card images-card">
-                        <h2>Images</h2>
-                        <div className="chip-list">
-                            {data.images.map((image) => <span className="chip" key={image}>{image}</span>)}
-                        </div>
-                    </div>
-
-                    <div className="card table-card">
+                    <div className="card table-card table-card--half">
                         <div className="table-toolbar">
                             <h2>Findings</h2>
                             <div className="filters">
@@ -92,40 +122,126 @@ export function ScanDetailsPage() {
                             </div>
                         </div>
 
-                        {!findings.length ? <EmptyState title="No findings" description="Try another severity or search filter." /> : (
-                            <table>
-                                <thead>
-                                <tr>
-                                    <th>Severity</th>
-                                    <th>CVE</th>
-                                    <th>Package</th>
-                                    <th>Installed</th>
-                                    <th>Fixed</th>
-                                    <th>CVSS</th>
-                                    <th>Scanner</th>
-                                    <th>Title</th>
-                                </tr>
-                                </thead>
-                                <tbody>
-                                {findings.map((finding: Finding) => (
-                                    <tr key={finding.id}>
-                                        <td><SeverityBadge severity={finding.severity} /></td>
-                                        <td>{finding.cve_id || '—'}</td>
-                                        <td>{finding.pkg_name || '—'}</td>
-                                        <td>{finding.installed_version || '—'}</td>
-                                        <td>{finding.fixed_version || '—'}</td>
-                                        <td>{formatNumber(finding.cvss_score)}</td>
-                                        <td>{finding.scanner}</td>
-                                        <td>{finding.title}</td>
-                                    </tr>
-                                ))}
-                                </tbody>
-                            </table>
+                        {!findings.length ? (
+                            <EmptyState title="No findings" description="Try another severity or search filter." />
+                        ) : (
+                                <div className="table-scroll">
+                                    <table>
+                                        <thead>
+                                        <tr>
+                                            <th>Severity</th>
+                                            <th>CVE</th>
+                                            <th>Package</th>
+                                            <th>Installed</th>
+                                            <th>Fixed</th>
+                                            <th>CVSS</th>
+                                            <th>Scanner</th>
+                                            <th>Title</th>
+                                        </tr>
+                                        </thead>
+                                        <tbody>
+                                        {findings.map((finding: Finding) => (
+                                            <tr key={finding.id}>
+                                                <td><SeverityBadge severity={finding.severity} /></td>
+                                                <td>
+                                                    {finding.cve_id ? (
+                                                        <button
+                                                            className="link-button"
+                                                            type="button"
+                                                            onClick={() => handleOpenNvd(finding.cve_id!)}
+                                                        >
+                                                            {finding.cve_id}
+                                                        </button>
+                                                    ) : (
+                                                        '—'
+                                                    )}
+                                                </td>                                                <td>{finding.pkg_name || '—'}</td>
+                                                <td>{finding.installed_version || '—'}</td>
+                                                <td>{finding.fixed_version || '—'}</td>
+                                                <td>{formatNumber(finding.cvss_score)}</td>
+                                                <td>{finding.scanner}</td>
+                                                <td>{finding.title}</td>
+                                            </tr>
+                                        ))}
+                                        </tbody>
+                                    </table>
+                                </div>
                         )}
 
                         <Pagination page={page} pageSize={pageSize} total={total} onPageChange={setPage} onPageSizeChange={(size) => { setPageSize(size); setPage(1); }} />
                     </div>
                 </>
+            )}
+
+            {nvdOpen && (
+                <div className="modal-backdrop" onMouseDown={() => setNvdOpen(false)}>
+                    <section
+                        className="modal modal--wide"
+                        onMouseDown={(event) => event.stopPropagation()}
+                    >
+                        <header className="modal__header">
+                            <h2>{nvdData?.cve_id || 'NVD details'}</h2>
+                            <Button variant="ghost" onClick={() => setNvdOpen(false)}>
+                                ×
+                            </Button>
+                        </header>
+
+                        <div className="modal__body">
+                            {nvdLoading && <div className="loader">Loading NVD data…</div>}
+
+                            {nvdData && (
+                                <div className="nvd-details">
+                                    <div className="summary-grid">
+                                        <article className="metric-card">
+                                            <span>Severity</span>
+                                            <strong>
+                                                <SeverityBadge severity={nvdData.severity} />
+                                            </strong>
+                                        </article>
+
+                                        <article className="metric-card">
+                                            <span>CVSS</span>
+                                            <strong>{formatNumber(nvdData.cvss_score)}</strong>
+                                        </article>
+
+                                        <article className="metric-card">
+                                            <span>Source</span>
+                                            <strong>{nvdData.source}</strong>
+                                        </article>
+                                    </div>
+
+                                    <div className="card nvd-section">
+                                        <h3>Description</h3>
+                                        <p>{nvdData.description || 'No description from NVD.'}</p>
+                                    </div>
+
+                                    <div className="card nvd-section">
+                                        <h3>Dates</h3>
+                                        <p>Published: {nvdData.published_at || '—'}</p>
+                                        <p>Modified: {nvdData.modified_at || '—'}</p>
+                                    </div>
+
+                                    <div className="card nvd-section">
+                                        <h3>References</h3>
+                                        {!nvdData.references.length ? (
+                                            <p>No references.</p>
+                                        ) : (
+                                            <ul>
+                                                {nvdData.references.map((ref) => (
+                                                    <li key={ref}>
+                                                        <a href={ref} target="_blank" rel="noreferrer">
+                                                            {ref}
+                                                        </a>
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </section>
+                </div>
             )}
         </section>
     );

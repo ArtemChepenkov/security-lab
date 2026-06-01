@@ -1,31 +1,25 @@
-import { FormEvent, useState } from 'react';
-import { securityLabApi } from '../../api/scan';
+import React, { useState } from 'react';
+import {startScan} from '../../api/scan';
 import { Button } from '../../components/Button';
 import { Modal } from '../../components/Modal';
 
-export function StartScanModal({ isOpen, onClose, onStarted }: { isOpen: boolean; onClose: () => void; onStarted?: () => void }) {
+export function StartScanModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void; onStarted?: () => void }) {
     const [release, setRelease] = useState('');
     const [file, setFile] = useState<File | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    async function handleSubmit(event: FormEvent) {
-        event.preventDefault();
+    async function handleSubmit() {
         setError(null);
 
         if (!release.trim()) return setError('Введите имя scan/release.');
         if (!file) return setError('Выберите Helm chart .tgz.');
 
-        const data = new FormData();
-        data.append('release', release.trim());
-        data.append('chart', file);
-
         try {
             setLoading(true);
-            await securityLabApi.startScan(data);
+            await startScan(release.trim(), file);
             setRelease('');
             setFile(null);
-            onStarted?.();
             onClose();
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to start scan');

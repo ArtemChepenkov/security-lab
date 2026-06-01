@@ -1,81 +1,292 @@
-import { download, request } from './client';
-import type {
+import {
     DiffResponse,
     PaginatedResponse,
     ScanDetailsResponse,
-    ScanItem, SbomItem,
+    ScanItem,
+    SbomItem,
     Vulnerability,
     VulnerabilityDetails
-} from '../types';
+} from "../types";
 
-function buildQuery(params: Record<string, string | number | string[] | undefined>) {
-    const query = new URLSearchParams();
+const API_URL = "http://130.193.53.6:8080";
+const API_KEY = process.env.REACT_APP_API_KEY ?? "";
 
-    Object.entries(params).forEach(([key, value]) => {
-        if (value === undefined || value === '') return;
-        if (Array.isArray(value)) value.forEach((item) => query.append(key, item));
-        else query.set(key, String(value));
+export async function startScan( release: string, chart: File):
+    Promise<{
+        scan_id: string;
+        namespace: string;
+        status: string; }> {
+    const formData = new FormData();
+    formData.append("release", release);
+    formData.append("chart", chart);
+
+    const response = await fetch(`${API_URL}/scan/start`, {
+        method: "POST",
+        headers: API_KEY ? { "X-API-Key": API_KEY } : undefined,
+        body: formData,
     });
 
-    const result = query.toString();
-    return result ? `?${result}` : '';
+    if (!response.ok) {
+        throw new Error(await response.text());
+    }
+
+    return response.json();
 }
 
-export const securityLabApi = {
-    startScan(data: FormData) {
-        return request<unknown>('/scan/start', { method: 'POST', body: data });
-    },
+export async function startKubeBenchScan():
+    Promise<{
+        scan_id: string;
+        status: string; }> {
+    const response = await fetch(`${API_URL}/scan/kube-bench`, {
+        method: "POST",
+        headers: API_KEY ? { "X-API-Key": API_KEY } : undefined,
+    });
 
-    getScans(params: { page?: number; pageSize?: number; q?: string } = {}) {
-        return request<PaginatedResponse<ScanItem>>(
-            `/scan/list${buildQuery({ page: params.page ?? 1, page_size: params.pageSize ?? 20, q: params.q })}`,
-        );
-    },
+    if (!response.ok) {
+        throw new Error(await response.text());
+    }
 
-    getScan(scanId: string, params: { page?: number; pageSize?: number; q?: string; severity?: string[]; scanner?: string } = {}) {
-        return request<ScanDetailsResponse>(
-            `/scan/${scanId}${buildQuery({
-                page: params.page ?? 1,
-                page_size: params.pageSize ?? 50,
-                q: params.q,
-                severity: params.severity,
-                scanner: params.scanner,
-            })}`,
-        );
-    },
+    return response.json();
+}
 
-    deleteScan(scanId: string) {
-        return request<unknown>(`/scan/${scanId}`, { method: 'DELETE' });
-    },
+export async function getScans( page?: number, pageSize?: number ): Promise<PaginatedResponse<ScanItem>> {
+    const params = new URLSearchParams();
 
-    diffScans(scan1: string, scan2: string) {
-        return request<DiffResponse>(`/scan/diff/${scan1}/${scan2}`);
-    },
+    if (page !== undefined) {
+        params.set("page", String(page));
+    }
 
-    getSboms(scanId: string, image?: string) {
-        return request<PaginatedResponse<SbomItem>>(`/scan/${scanId}/sbom${buildQuery({ image })}`);
-    },
+    if (pageSize !== undefined) {
+        params.set("page_size", String(pageSize));
+    }
 
-    downloadSbom(scanId: string, sbomId: number) {
-        return download(`/scan/${scanId}/sbom/${sbomId}/download`, `sbom-${sbomId}.json`);
-    },
+    const query = params.toString();
+    const response = await fetch(
+        `${API_URL}/scan/list${query ? `?${query}` : ""}`,
+        {
+            headers: API_KEY ? { "X-API-Key": API_KEY } : undefined,
+        }
+    );
 
-    getVulnerabilities(params: { page?: number; pageSize?: number; q?: string; severity?: string[] } = {}) {
-        return request<PaginatedResponse<Vulnerability>>(
-            `/vulnerabilities${buildQuery({
-                page: params.page ?? 1,
-                page_size: params.pageSize ?? 20,
-                q: params.q,
-                severity: params.severity,
-            })}`,
-        );
-    },
+    if (!response.ok) {
+        throw new Error(await response.text());
+    }
 
-    getVulnerability(cve: string) {
-        return request<VulnerabilityDetails>(`/vulnerabilities/${cve}`);
-    },
+    return response.json();
+}
 
-    syncNvd(cve: string) {
-        return request<unknown>(`/vulnerabilities/sync/nvd/${cve}`, { method: 'POST' });
-    },
-};
+export async function getScanDetails(
+    scanId: string,
+    severity?: string[],
+    scanner?: string,
+    q?: string,
+    page?: number,
+    pageSize?: number ): Promise<ScanDetailsResponse> {
+    const params = new URLSearchParams();
+
+    if (severity?.length) {
+        severity.forEach((item) => params.append("severity", item));
+    }
+
+    if (scanner) {
+        params.set("scanner", scanner);
+    }
+
+    if (q) {
+        params.set("q", q);
+    }
+
+    if (page !== undefined) {
+        params.set("page", String(page));
+    }
+
+    if (pageSize !== undefined) {
+        params.set("page_size", String(pageSize));
+    }
+
+    const query = params.toString();
+
+    const response = await fetch(
+        `${API_URL}/scan/${encodeURIComponent(scanId)}${query ? `?${query}` : ""}`,
+        {
+            headers: API_KEY ? { "X-API-Key": API_KEY } : undefined,
+        }
+    );
+
+    if (!response.ok) {
+        throw new Error(await response.text());
+    }
+
+    return response.json();
+}
+
+export async function getScanSbom( scanId: string, image?: string): Promise<{ items: SbomItem[] }> {
+    const params = new URLSearchParams();
+
+    if (image) {
+        params.set("image", image);
+    }
+
+    const query = params.toString();
+
+    const response = await fetch(
+        `${API_URL}/scan/${encodeURIComponent(scanId)}/sbom${query ? `?${query}` : ""}`,
+        {
+            headers: API_KEY ? { "X-API-Key": API_KEY } : undefined,
+        }
+    );
+
+    if (!response.ok) {
+        throw new Error(await response.text());
+    }
+
+    return response.json();
+}
+
+export async function downloadSbom( scanId: string, sbomId: number): Promise<Blob> {
+    const response = await fetch(
+        `${API_URL}/scan/${encodeURIComponent(scanId)}/sbom/${sbomId}/download`,
+        {
+            headers: API_KEY ? { "X-API-Key": API_KEY } : undefined,
+        }
+    );
+
+    if (!response.ok) {
+        throw new Error(await response.text());
+    }
+
+    return response.blob();
+}
+
+export async function getScanDiff( scan1: string, scan2: string ): Promise<DiffResponse> {
+    const response = await fetch(
+        `${API_URL}/scan/diff/${encodeURIComponent(scan1)}/${encodeURIComponent(scan2)}`,
+        {
+            headers: API_KEY ? { "X-API-Key": API_KEY } : undefined,
+        }
+    );
+
+    if (!response.ok) {
+        throw new Error(await response.text());
+    }
+
+    return response.json();
+}
+
+export async function deleteScan( scanId: string ): Promise<{ deleted: string }> {
+    const response = await fetch(
+        `${API_URL}/scan/${encodeURIComponent(scanId)}`,
+        {
+            method: "DELETE",
+            headers: API_KEY ? { "X-API-Key": API_KEY } : undefined,
+        }
+    );
+
+    if (!response.ok) {
+        throw new Error(await response.text());
+    }
+
+    return response.json();
+}
+
+export async function getVulnerabilityDetails( cveId: string ): Promise<VulnerabilityDetails> {
+    const response = await fetch(
+        `${API_URL}/vulnerabilities/${encodeURIComponent(cveId)}`,
+        {
+            headers: API_KEY ? { "X-API-Key": API_KEY } : undefined,
+        }
+    );
+
+    if (!response.ok) {
+        throw new Error(await response.text());
+    }
+
+    return response.json();
+}
+
+export async function syncNvdCve( cveId: string ):
+    Promise<{
+        synced: string;
+        source: string; }> {
+    const response = await fetch(
+        `${API_URL}/vulnerabilities/sync/nvd/${encodeURIComponent(cveId)}`,
+        {
+            method: "POST",
+            headers: API_KEY ? { "X-API-Key": API_KEY } : undefined,
+        }
+    );
+
+    if (!response.ok) {
+        throw new Error(await response.text());
+    }
+
+    return response.json();
+}
+
+export async function getVulnerabilities(
+    severity?: string[],
+    q?: string,
+    page?: number,
+    pageSize?: number
+): Promise<PaginatedResponse<Vulnerability>> {
+    const params = new URLSearchParams();
+
+    if (severity?.length) {
+        severity.forEach((item) => params.append("severity", item));
+    }
+
+    if (q) {
+        params.set("q", q);
+    }
+
+    if (page !== undefined) {
+        params.set("page", String(page));
+    }
+
+    if (pageSize !== undefined) {
+        params.set("page_size", String(pageSize));
+    }
+
+    const query = params.toString();
+
+    const response = await fetch(
+        `${API_URL}/vulnerabilities${query ? `?${query}` : ""}`,
+        {
+            headers: API_KEY ? { "X-API-Key": API_KEY } : undefined,
+        }
+    );
+
+    if (!response.ok) {
+        throw new Error(await response.text());
+    }
+
+    return response.json();
+}
+
+export async function getNvdForCve(cveId: string): Promise<VulnerabilityDetails> {
+    const firstResponse = await fetch(
+        `${API_URL}/vulnerabilities/${encodeURIComponent(cveId)}`,
+        {
+            headers: API_KEY ? { "X-API-Key": API_KEY } : undefined,
+        }
+    );
+
+    if (firstResponse.ok) {
+        return firstResponse.json();
+    }
+
+    await syncNvdCve(cveId);
+
+    const secondResponse = await fetch(
+        `${API_URL}/vulnerabilities/${encodeURIComponent(cveId)}`,
+        {
+            headers: API_KEY ? { "X-API-Key": API_KEY } : undefined,
+        }
+    );
+
+    if (!secondResponse.ok) {
+        throw new Error(await secondResponse.text());
+    }
+
+    return secondResponse.json();
+}
