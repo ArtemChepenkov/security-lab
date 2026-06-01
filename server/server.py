@@ -153,10 +153,25 @@ init_db()
 # UTIL
 # =========================================================
 
-def run_cmd(cmd: List[str]):
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    return {"code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
-
+def run_cmd(cmd: List[str], timeout: int = 300):
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return {
+            "code": proc.returncode,
+            "stdout": proc.stdout,
+            "stderr": proc.stderr,
+        }
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "code": 124,
+            "stdout": exc.stdout or "",
+            "stderr": f"Command timed out after {timeout}s: {' '.join(cmd)}",
+        }
 
 SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"]
 
@@ -224,6 +239,37 @@ def _update_scan_status(scan_id: str, status: str):
 # =========================================================
 # PERSISTENCE
 # =========================================================
+def sync_nvd_for_scan(scan_id: str):
+    conn = get_conn()
+    rows = conn.execute(
+        """
+        SELECT DISTINCT cve_id
+        FROM scan_findings
+        WHERE scan_id=? AND cve_id IS NOT NULL AND cve_id != ''
+        """,
+        (scan_id,),
+    ).fetchall()
+    conn.close()
+
+    api_key = '92c6cde9-49a2-44e8-ab43-3818bbf4bb05'
+
+    for row in rows:
+        cve_id = row["cve_id"]
+
+        try:
+            data = fetch_nvd_cve(cve_id, api_key=api_key)
+            items = data.get("vulnerabilities") or []
+
+            if not items:
+                continue
+
+            parsed = parse_nvd_item(items[0])
+            upsert_vulnerability(**parsed)
+
+            time.sleep(0.7)
+        except Exception as exc:
+            print(f"NVD sync failed for {cve_id}: {exc}", flush=True)
+
 
 def upsert_vulnerability(
     cve_id: str,
@@ -316,7 +362,7 @@ def parse_nvd_item(item: Dict[str, Any]):
 def create_scan(release: str, namespace_override: Optional[str] = None) -> tuple:
     scan_id = uuid.uuid4().hex[:8]
     namespace = namespace_override or f"scan-{scan_id}"
-    run_cmd(["kubectl", "create", "namespace", namespace])
+    run_cmd(["kubectl", "create", "namespace", namespace], timeout=30)
     conn = get_conn()
     conn.execute(
         "INSERT INTO scans VALUES (?,?,?,?,?)",
@@ -416,7 +462,7 @@ def parse_trivy_findings(scan_id: str, image: str, data: Dict[str, Any]):
 
 
 def run_trivy_image(scan_id: str, image: str):
-    res = run_cmd(["trivy", "image", "-f", "json", "--quiet", image])
+    res = run_cmd(["trivy", "image", "-f", "json", "--quiet", image], timeout=300)
     if res["code"] != 0:
         print(f"trivy failed for {image}: {res['stderr']}", flush=True)
         return
@@ -472,7 +518,7 @@ def parse_grype_findings(scan_id: str, image: str, data: Dict[str, Any]):
 
 def run_grype_image(scan_id: str, image: str):
     # Prefer syft → grype (SBOM-based) for richer results; fall back to direct scan.
-    syft_res = run_cmd(["syft", image, "-o", "cyclonedx-json", "--quiet"])
+    syft_res = run_cmd(["syft", image, "-o", "cyclonedx-json", "--quiet"], timeout=120)
     sbom_path: Optional[str] = None
 
     if syft_res["code"] == 0 and syft_res["stdout"].strip():
@@ -486,7 +532,7 @@ def run_grype_image(scan_id: str, image: str):
         grype_target = image
 
     try:
-        res = run_cmd(["grype", grype_target, "-o", "json"])
+        res = run_cmd(["grype", grype_target, "-o", "json"], timeout=300)
     finally:
         if sbom_path:
             os.unlink(sbom_path)
@@ -524,7 +570,7 @@ def _parse_kube_bench_json(scan_id: str, data: Dict[str, Any]):
 
 def _run_kube_bench_background(scan_id: str):
     try:
-        res = run_cmd(["kube-bench", "run", "--json"])
+        res = run_cmd(["sudo", "kube-bench", "run", "--json"], timeout=300)
         if res["code"] != 0:
             print(f"kube-bench failed: {res['stderr']}", flush=True)
             _update_scan_status(scan_id, "failed")
@@ -551,7 +597,7 @@ def _run_helm_scan_background(
     try:
         _update_scan_status(scan_id, "running")
 
-        res = run_cmd(["helm", "upgrade", "--install", release, chart_path, "-n", namespace])
+        res = run_cmd(["helm", "upgrade", "--install", release, chart_path, "-n", namespace], timeout=120)
         if res["code"] != 0:
             print(f"helm failed for scan {scan_id}: {res['stderr']}", flush=True)
             _update_scan_status(scan_id, "failed")
@@ -577,6 +623,11 @@ def _run_helm_scan_background(
             run_grype_image(scan_id, img)
 
         _update_scan_status(scan_id, "done")
+
+        print(f"scan {scan_id}: running trivy for {img}", flush=True)
+        print(f"scan {scan_id}: running grype for {img}", flush=True)
+        print(f"scan {scan_id}: syncing nvd", flush=True)
+        print(f"scan {scan_id}: done", flush=True)
     except Exception as exc:
         print(f"scan {scan_id} error: {exc}", flush=True)
         _update_scan_status(scan_id, "failed")
@@ -589,7 +640,7 @@ def _run_helm_scan_background(
 # =========================================================
 
 def get_images(namespace: str) -> List[str]:
-    res = run_cmd(["kubectl", "get", "pods", "-n", namespace, "-o", "json"])
+    res = run_cmd(["kubectl", "get", "pods", "-n", namespace, "-o", "json"], timeout=30)
     try:
         data = json.loads(res["stdout"])
     except json.JSONDecodeError:
@@ -644,6 +695,151 @@ def run_kube_bench(background_tasks: BackgroundTasks):
     background_tasks.add_task(_run_kube_bench_background, scan_id)
 
     return {"scan_id": scan_id, "status": "running"}
+
+@app.get("/kube-bench/list")
+def list_kube_bench_scans(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+):
+    page, page_size, offset = build_pagination(page, page_size)
+    conn = get_conn()
+    cur = conn.cursor()
+
+    total = cur.execute(
+        "SELECT COUNT(*) AS c FROM scans WHERE release=?",
+        ("kube-bench",),
+    ).fetchone()["c"]
+
+    rows = cur.execute(
+        """
+        SELECT
+            s.id,
+            s.ts,
+            s.namespace,
+            s.release,
+            s.status,
+            COUNT(f.id) AS findings_total,
+            SUM(CASE WHEN f.severity = 'HIGH' THEN 1 ELSE 0 END) AS high_count,
+            SUM(CASE WHEN f.severity = 'MEDIUM' THEN 1 ELSE 0 END) AS medium_count,
+            SUM(CASE WHEN f.severity = 'LOW' THEN 1 ELSE 0 END) AS low_count
+        FROM scans s
+        LEFT JOIN scan_findings f ON f.scan_id = s.id AND f.scanner = 'kube-bench'
+        WHERE s.release = ?
+        GROUP BY s.id, s.ts, s.namespace, s.release, s.status
+        ORDER BY s.ts DESC
+        LIMIT ? OFFSET ?
+        """,
+        ("kube-bench", page_size, offset),
+    ).fetchall()
+    conn.close()
+
+    return {
+        "items": [row_to_dict(r) for r in rows],
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+    }
+
+
+@app.get("/kube-bench/{scan_id}")
+def kube_bench_details(
+    scan_id: str,
+    severity: Optional[List[str]] = Query(None),
+    q: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+):
+    page, page_size, offset = build_pagination(page, page_size)
+    conn = get_conn()
+    cur = conn.cursor()
+
+    scan = cur.execute(
+        """
+        SELECT id, ts, namespace, release, status
+        FROM scans
+        WHERE id=? AND release='kube-bench'
+        """,
+        (scan_id,),
+    ).fetchone()
+
+    if not scan:
+        conn.close()
+        raise HTTPException(404, "kube-bench scan not found")
+
+    where = ["scan_id = ?", "scanner = 'kube-bench'"]
+    params: List[Any] = [scan_id]
+
+    if severity:
+        normalized = [normalize_severity(s) for s in severity]
+        placeholders = ",".join("?" for _ in normalized)
+        where.append(f"severity IN ({placeholders})")
+        params.extend(normalized)
+
+    if q:
+        where.append("(title LIKE ? OR target LIKE ?)")
+        like = f"%{q}%"
+        params.extend([like, like])
+
+    where_sql = " AND ".join(where)
+
+    total = cur.execute(
+        f"SELECT COUNT(*) AS c FROM scan_findings WHERE {where_sql}",
+        params,
+    ).fetchone()["c"]
+
+    rows = cur.execute(
+        f"""
+        SELECT id, scanner, severity, target, title, cve_id,
+               pkg_name, installed_version, fixed_version,
+               cvss_score, description, references_json
+        FROM scan_findings
+        WHERE {where_sql}
+        ORDER BY
+            CASE severity
+                WHEN 'CRITICAL' THEN 1
+                WHEN 'HIGH' THEN 2
+                WHEN 'MEDIUM' THEN 3
+                WHEN 'LOW' THEN 4
+                ELSE 5
+            END,
+            id DESC
+        LIMIT ? OFFSET ?
+        """,
+        params + [page_size, offset],
+    ).fetchall()
+
+    summary = cur.execute(
+        """
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN severity = 'HIGH' THEN 1 ELSE 0 END) AS high,
+            SUM(CASE WHEN severity = 'MEDIUM' THEN 1 ELSE 0 END) AS medium,
+            SUM(CASE WHEN severity = 'LOW' THEN 1 ELSE 0 END) AS low,
+            SUM(CASE WHEN severity = 'UNKNOWN' THEN 1 ELSE 0 END) AS unknown
+        FROM scan_findings
+        WHERE scan_id=? AND scanner='kube-bench'
+        """,
+        (scan_id,),
+    ).fetchone()
+
+    conn.close()
+
+    items = []
+    for row in rows:
+        item = row_to_dict(row)
+        item["references"] = parse_json_list(item.pop("references_json", None))
+        items.append(item)
+
+    return {
+        "scan": row_to_dict(scan),
+        "summary": row_to_dict(summary),
+        "findings": {
+            "items": items,
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+        },
+    }
 
 
 @app.get("/scan/list")
@@ -811,7 +1007,7 @@ def delete_scan(scan_id: str):
     namespace = row["namespace"]
     conn.close()
 
-    run_cmd(["kubectl", "delete", "namespace", namespace])
+    run_cmd(["kubectl", "delete", "namespace", namespace], timeout=30)
 
     conn = get_conn()
     conn.execute("DELETE FROM scans WHERE id=?", (scan_id,))
