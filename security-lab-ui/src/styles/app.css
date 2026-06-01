@@ -367,6 +367,12 @@ input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 4px 
   border: 1px solid #fecaca;
 }
 
+.alert--success {
+  color: #14532d;
+  background: #dcfce7;
+  border: 1px solid #bbf7d0;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

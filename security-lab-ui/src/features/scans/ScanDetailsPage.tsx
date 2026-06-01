@@ -9,12 +9,15 @@ import type { Finding, FindingSeverity, ScanDetailsResponse, VulnerabilityDetail
 import { formatDate, formatNumber } from '../../utils/format';
 
 const severities: Array<FindingSeverity | 'ALL'> = ['ALL', 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'UNKNOWN'];
+const scanners = ['ALL', 'trivy', 'grype', 'trivy-k8s', 'kube-bench'] as const;
+type ScannerFilter = (typeof scanners)[number];
 
 export function ScanDetailsPage() {
     const { scanId = '' } = useParams();
     const navigate = useNavigate();
     const [data, setData] = useState<ScanDetailsResponse | null>(null);
     const [severity, setSeverity] = useState<FindingSeverity | 'ALL'>('ALL');
+    const [scanner, setScanner] = useState<ScannerFilter>('ALL');
     const [q, setQ] = useState('');
     const [page, setPage] = useState(1);
     const [pageSize, setPageSize] = useState(50);
@@ -31,13 +34,13 @@ export function ScanDetailsPage() {
         setLoading(true);
         setError(null);
 
-        getScanDetails(scanId, severity === 'ALL' ? undefined : [severity], 'trivy', q, page, pageSize )
+        getScanDetails(scanId, severity === 'ALL' ? undefined : [severity], scanner === 'ALL' ? undefined : scanner, q, page, pageSize )
             .then((response) => alive && setData(response))
             .catch((err) => alive && setError(err instanceof Error ? err.message : 'Failed to load scan'))
             .finally(() => alive && setLoading(false));
 
         return () => { alive = false; };
-    }, [scanId, page, pageSize, q, severity]);
+    }, [scanId, page, pageSize, q, severity, scanner]);
 
     async function handleDelete() {
         const confirmed = window.confirm('Delete this scan?');
@@ -117,6 +120,9 @@ export function ScanDetailsPage() {
                             <div className="filters">
                                 <select value={severity} onChange={(event) => { setSeverity(event.target.value as FindingSeverity | 'ALL'); setPage(1); }}>
                                     {severities.map((item) => <option key={item} value={item}>{item}</option>)}
+                                </select>
+                                <select value={scanner} onChange={(event) => { setScanner(event.target.value as ScannerFilter); setPage(1); }}>
+                                    {scanners.map((item) => <option key={item} value={item}>{item === 'ALL' ? 'All scanners' : item}</option>)}
                                 </select>
                                 <input className="search" value={q} placeholder="Search findings" onChange={(event) => { setQ(event.target.value); setPage(1); }} />
                             </div>

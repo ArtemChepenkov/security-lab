@@ -9,6 +9,8 @@ import { ScanList} from './features/scans/ScanList';
 import { SbomPage } from './features/sbom/SbomPage';
 import { VulnerabilitiesPage } from './features/vulnerabilities/VulnerabilitiesPage';
 import {CompareScansPage} from "./features/scans/CompareScansPage";
+import { K8sScanPage } from './features/scans/K8sScanPage';
+import { ClusterScanPage } from './features/scans/ClusterScanPage';
 
 import './styles/app.css';
 
@@ -21,6 +23,8 @@ export default function App() {
                 <Route element={<AppLayout onOpenScanModal={() => setScanModalOpen(true)} />}>
                     <Route index element={<DashboardPage />} />
                     <Route path="scans" element={<ScanList />} />
+                    <Route path="scans/k8s" element={<K8sScanPage />} />
+                    <Route path="scans/cluster" element={<ClusterScanPage />} />
                     <Route path="scans/compare" element={<CompareScansPage/>}/>
                     <Route path="scans/:scanId" element={<ScanDetailsPage />} />
                     <Route path="scans/:scanId/sbom" element={<SbomPage />} />
