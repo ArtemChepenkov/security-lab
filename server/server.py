@@ -19,6 +19,7 @@ from fastapi.responses import Response
 from fastapi.security import APIKeyHeader
 
 import yaml
+from pydantic import BaseModel
 
 # =========================================================
 # AUTH
@@ -105,6 +106,8 @@ def init_db():
         "cvss_score": "REAL",
         "description": "TEXT",
         "references_json": "TEXT",
+        # "vuln" | "misconfig" — misconfig используется для trivy k8s
+        "finding_type": "TEXT DEFAULT 'vuln'",
     }
     for column, column_type in migrations.items():
         if column not in existing_columns:
@@ -239,7 +242,7 @@ def _update_scan_status(scan_id: str, status: str):
 # =========================================================
 # PERSISTENCE
 # =========================================================
-def sync_nvd_for_scan(scan_id: str):
+def sync_nvd_for_scan(scan_id: str) -> Dict[str, Any]:
     conn = get_conn()
     rows = conn.execute(
         """
@@ -251,24 +254,36 @@ def sync_nvd_for_scan(scan_id: str):
     ).fetchall()
     conn.close()
 
-    api_key = '92c6cde9-49a2-44e8-ab43-3818bbf4bb05'
+    api_key = os.environ.get("NVD_API_KEY") or None
 
+    synced, skipped, failed = 0, 0, 0
     for row in rows:
         cve_id = row["cve_id"]
+
+        # NVD не знает DLA-*, GHSA-* и прочие форматы — пропускаем
+        if not cve_id.upper().startswith("CVE-"):
+            skipped += 1
+            continue
 
         try:
             data = fetch_nvd_cve(cve_id, api_key=api_key)
             items = data.get("vulnerabilities") or []
 
             if not items:
+                skipped += 1
                 continue
 
             parsed = parse_nvd_item(items[0])
             upsert_vulnerability(**parsed)
+            synced += 1
 
-            time.sleep(0.7)
+            # NVD rate limit: 5 req/30s без ключа, 50 req/30s с ключом
+            time.sleep(0.7 if api_key else 6)
         except Exception as exc:
+            failed += 1
             print(f"NVD sync failed for {cve_id}: {exc}", flush=True)
+
+    return {"synced": synced, "skipped": skipped, "failed": failed}
 
 
 def upsert_vulnerability(
@@ -394,19 +409,22 @@ def save_finding(
     cvss_score: Optional[float] = None,
     description: Optional[str] = None,
     references: Optional[List[str]] = None,
+    finding_type: str = "vuln",
 ):
     conn = get_conn()
     conn.execute(
         """
         INSERT INTO scan_findings(
             scan_id, scanner, severity, target, title, cve_id, pkg_name,
-            installed_version, fixed_version, cvss_score, description, references_json
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            installed_version, fixed_version, cvss_score, description, references_json,
+            finding_type
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             scan_id, scanner, normalize_severity(severity), target, title,
             cve_id, pkg_name, installed_version, fixed_version,
             cvss_score, description, json.dumps(references or []),
+            finding_type,
         ),
     )
     conn.commit()
@@ -475,6 +493,91 @@ def run_trivy_image(scan_id: str, image: str):
 
 
 # =========================================================
+# TRIVY K8S SCANNER
+# =========================================================
+
+def parse_trivy_k8s_report(scan_id: str, data: Dict[str, Any]):
+    """Парсит вывод `trivy k8s -f json`: уязвимости образов + мисконфиги ресурсов."""
+    for resource in data.get("Resources") or []:
+        kind = resource.get("Kind", "")
+        ns = resource.get("Namespace", "")
+        name = resource.get("Name", "")
+        # target: Deployment/default/juice-shop
+        k8s_target = "/".join(filter(None, [kind, ns, name])) or "cluster"
+
+        for result in resource.get("Results") or []:
+            # --- CVE в образах ---
+            for v in result.get("Vulnerabilities") or []:
+                cve_id = v.get("VulnerabilityID")
+                cvss = extract_cvss_from_trivy(v)
+                refs = v.get("References") or []
+                save_finding(
+                    scan_id=scan_id,
+                    scanner="trivy-k8s",
+                    severity=v.get("Severity", "UNKNOWN"),
+                    target=k8s_target,
+                    title=v.get("Title") or cve_id or "",
+                    cve_id=cve_id,
+                    pkg_name=v.get("PkgName"),
+                    installed_version=v.get("InstalledVersion"),
+                    fixed_version=v.get("FixedVersion"),
+                    cvss_score=cvss,
+                    description=v.get("Description"),
+                    references=refs,
+                    finding_type="vuln",
+                )
+                if cve_id:
+                    upsert_vulnerability(
+                        cve_id=cve_id,
+                        severity=v.get("Severity"),
+                        cvss_score=cvss,
+                        title=v.get("Title"),
+                        description=v.get("Description"),
+                        references=refs,
+                        source="trivy-k8s",
+                    )
+
+            # --- Мисконфиги k8s ресурсов ---
+            for m in result.get("Misconfigurations") or []:
+                status = m.get("Status", "")
+                if status == "PASS":
+                    continue
+                save_finding(
+                    scan_id=scan_id,
+                    scanner="trivy-k8s",
+                    severity=m.get("Severity", "UNKNOWN"),
+                    target=k8s_target,
+                    title=m.get("Title") or m.get("ID") or "",
+                    cve_id=None,
+                    description=m.get("Description"),
+                    references=[m.get("PrimaryURL")] if m.get("PrimaryURL") else [],
+                    finding_type="misconfig",
+                )
+
+
+def _run_k8s_scan_background(scan_id: str, namespace: Optional[str]):
+    try:
+        cmd = ["trivy", "k8s", "-f", "json", "--quiet"]
+        if namespace:
+            cmd += ["--include-namespaces", namespace]
+        else:
+            cmd += ["--all-namespaces"]
+
+        res = run_cmd(cmd, timeout=600)
+        if res["code"] != 0:
+            print(f"trivy k8s failed: {res['stderr']}", flush=True)
+            _update_scan_status(scan_id, "failed")
+            return
+
+        data = json.loads(res["stdout"])
+        parse_trivy_k8s_report(scan_id, data)
+        _update_scan_status(scan_id, "done")
+    except Exception as exc:
+        print(f"trivy k8s scan {scan_id} error: {exc}", flush=True)
+        _update_scan_status(scan_id, "failed")
+
+
+# =========================================================
 # GRYPE SCANNER
 # =========================================================
 
@@ -482,35 +585,57 @@ def parse_grype_findings(scan_id: str, image: str, data: Dict[str, Any]):
     for match in data.get("matches") or []:
         vuln = match.get("vulnerability", {})
         artifact = match.get("artifact", {})
+        related = match.get("relatedVulnerabilities") or []
 
-        cve_id = vuln.get("id")
+        # Grype часто отдаёт GHSA/DLA как основной ID, а CVE прячет в relatedVulnerabilities.
+        # Ищем первый CVE-* среди related, иначе берём основной ID.
+        raw_id = vuln.get("id") or ""
+        cve_id = raw_id
+        for rv in related:
+            rv_id = rv.get("id") or ""
+            if rv_id.upper().startswith("CVE-"):
+                cve_id = rv_id
+                break
+
         severity = normalize_severity(vuln.get("severity", "UNKNOWN"))
+
+        # CVSS: сначала из основной записи, потом из related
         cvss = extract_cvss_from_grype(vuln)
+        if cvss is None:
+            for rv in related:
+                cvss = extract_cvss_from_grype(rv)
+                if cvss is not None:
+                    break
+
         fix_versions = vuln.get("fix", {}).get("versions") or []
         refs = vuln.get("urls") or []
+        description = vuln.get("description")
+
+        # title = короткий ID (CVE или GHSA), description — отдельно
+        title = cve_id or raw_id or ""
 
         save_finding(
             scan_id=scan_id,
             scanner="grype",
             severity=severity,
             target=image,
-            title=vuln.get("description") or cve_id or "",
-            cve_id=cve_id,
+            title=title,
+            cve_id=cve_id if cve_id.upper().startswith("CVE-") else None,
             pkg_name=artifact.get("name"),
             installed_version=artifact.get("version"),
             fixed_version=", ".join(fix_versions) if fix_versions else None,
             cvss_score=cvss,
-            description=vuln.get("description"),
+            description=description,
             references=refs,
         )
 
-        if cve_id:
+        if cve_id.upper().startswith("CVE-"):
             upsert_vulnerability(
                 cve_id=cve_id,
                 severity=severity,
                 cvss_score=cvss,
                 title=cve_id,
-                description=vuln.get("description"),
+                description=description,
                 references=refs,
                 source="grype",
             )
@@ -518,7 +643,8 @@ def parse_grype_findings(scan_id: str, image: str, data: Dict[str, Any]):
 
 def run_grype_image(scan_id: str, image: str):
     # Prefer syft → grype (SBOM-based) for richer results; fall back to direct scan.
-    syft_res = run_cmd(["syft", image, "-o", "cyclonedx-json", "--quiet"], timeout=120)
+    # Не используем --quiet у syft: в некоторых версиях он подавляет и stdout.
+    syft_res = run_cmd(["syft", image, "-o", "cyclonedx-json"], timeout=120)
     sbom_path: Optional[str] = None
 
     if syft_res["code"] == 0 and syft_res["stdout"].strip():
@@ -623,11 +749,7 @@ def _run_helm_scan_background(
             run_grype_image(scan_id, img)
 
         _update_scan_status(scan_id, "done")
-
-        print(f"scan {scan_id}: running trivy for {img}", flush=True)
-        print(f"scan {scan_id}: running grype for {img}", flush=True)
-        print(f"scan {scan_id}: syncing nvd", flush=True)
-        print(f"scan {scan_id}: done", flush=True)
+        print(f"scan {scan_id}: done ({len(images)} images)", flush=True)
     except Exception as exc:
         print(f"scan {scan_id} error: {exc}", flush=True)
         _update_scan_status(scan_id, "failed")
@@ -695,6 +817,32 @@ def run_kube_bench(background_tasks: BackgroundTasks):
     background_tasks.add_task(_run_kube_bench_background, scan_id)
 
     return {"scan_id": scan_id, "status": "running"}
+
+
+@app.post("/scan/k8s")
+def start_k8s_scan(
+    background_tasks: BackgroundTasks,
+    namespace: Optional[str] = Query(None, description="Конкретный namespace; если не указан — сканируется весь кластер"),
+):
+    """
+    Запускает `trivy k8s` — сканирует Deployments, DaemonSets, StatefulSets,
+    Jobs, Pods, Secrets, RBAC и прочие ресурсы.
+    Находки двух типов: vuln (CVE в образах) и misconfig (нарушения k8s best practices).
+    """
+    scan_id = uuid.uuid4().hex[:8]
+    label = namespace or "all-namespaces"
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO scans VALUES (?,?,?,?,?)",
+        (scan_id, int(time.time() * 1000), label, "trivy-k8s", "running"),
+    )
+    conn.commit()
+    conn.close()
+
+    background_tasks.add_task(_run_k8s_scan_background, scan_id, namespace)
+
+    return {"scan_id": scan_id, "namespace": label, "status": "running"}
+
 
 @app.get("/kube-bench/list")
 def list_kube_bench_scans(
@@ -1093,8 +1241,66 @@ def vulnerability_details(cve_id: str):
     return item
 
 
+class DescriptionUpdate(BaseModel):
+    description: str
+
+
+@app.patch("/vulnerabilities/{cve_id}/description")
+def update_vulnerability_description(cve_id: str, body: DescriptionUpdate):
+    """Позволяет фронтенду переопределить описание уязвимости."""
+    conn = get_conn()
+    cur = conn.cursor()
+    row = cur.execute("SELECT cve_id FROM vulnerabilities WHERE cve_id=?", (cve_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "vulnerability not found")
+    conn.execute(
+        "UPDATE vulnerabilities SET description=?, updated_at=? WHERE cve_id=?",
+        (body.description, int(time.time() * 1000), cve_id),
+    )
+    conn.commit()
+    conn.close()
+    return {"cve_id": cve_id, "updated": True}
+
+
+@app.post("/scan/{scan_id}/sync-nvd")
+def sync_nvd_scan(scan_id: str, background_tasks: BackgroundTasks):
+    """
+    Обогащает все CVE данного скана данными из NVD (описание, CVSS, ссылки).
+    Запускается ВРУЧНУЮ по запросу. Идёт в фоне — может занять минуты из-за rate limit.
+    Прогресс смотри в логах; результат — в GET /scan/{scan_id} (поля description/cvss_score).
+    Ключ NVD берётся из env NVD_API_KEY (с ключом лимит выше).
+    """
+    conn = get_conn()
+    exists = conn.execute("SELECT id FROM scans WHERE id=?", (scan_id,)).fetchone()
+    cve_count = conn.execute(
+        """
+        SELECT COUNT(DISTINCT cve_id) AS c FROM scan_findings
+        WHERE scan_id=? AND cve_id LIKE 'CVE-%'
+        """,
+        (scan_id,),
+    ).fetchone()["c"]
+    conn.close()
+
+    if not exists:
+        raise HTTPException(404, "scan not found")
+
+    background_tasks.add_task(sync_nvd_for_scan, scan_id)
+
+    return {
+        "scan_id": scan_id,
+        "status": "syncing",
+        "cve_to_sync": cve_count,
+        "note": "NVD sync запущен в фоне; результат появится в деталях скана",
+    }
+
+
 @app.post("/vulnerabilities/sync/nvd/{cve_id}")
 def sync_nvd_cve(cve_id: str, api_key: Optional[str] = None):
+    # NVD содержит только CVE-* идентификаторы.
+    # DLA (Debian), GHSA (GitHub) и другие форматы NVD не знает.
+    if not cve_id.upper().startswith("CVE-"):
+        raise HTTPException(400, f"NVD поддерживает только CVE-* идентификаторы, получен: {cve_id}")
     try:
         data = fetch_nvd_cve(cve_id, api_key=api_key)
     except Exception as exc:
