@@ -557,11 +557,11 @@ def parse_trivy_k8s_report(scan_id: str, data: Dict[str, Any]):
 
 def _run_k8s_scan_background(scan_id: str, namespace: Optional[str]):
     try:
+        # `trivy k8s` без флага namespace сканирует весь кластер (это поведение по умолчанию).
+        # Флага --all-namespaces в trivy нет.
         cmd = ["trivy", "k8s", "-f", "json", "--quiet"]
         if namespace:
             cmd += ["--include-namespaces", namespace]
-        else:
-            cmd += ["--all-namespaces"]
 
         res = run_cmd(cmd, timeout=600)
         if res["code"] != 0:
