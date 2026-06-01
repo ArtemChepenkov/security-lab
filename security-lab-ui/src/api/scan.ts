@@ -77,6 +77,30 @@ export async function startK8sScan( namespace?: string ):
     return response.json();
 }
 
+export async function getNamespaces(): Promise<{ items: string[] }> {
+    const response = await fetch(`${API_URL}/namespaces`, {
+        headers: API_KEY ? { "X-API-Key": API_KEY } : undefined,
+    });
+
+    if (!response.ok) {
+        throw new Error(await response.text());
+    }
+
+    return response.json();
+}
+
+export async function getScanStats(): Promise<{ total: number; by_status: Record<string, number> }> {
+    const response = await fetch(`${API_URL}/scan/stats`, {
+        headers: API_KEY ? { "X-API-Key": API_KEY } : undefined,
+    });
+
+    if (!response.ok) {
+        throw new Error(await response.text());
+    }
+
+    return response.json();
+}
+
 export async function getScans( page?: number, pageSize?: number ): Promise<PaginatedResponse<ScanItem>> {
     const params = new URLSearchParams();
 

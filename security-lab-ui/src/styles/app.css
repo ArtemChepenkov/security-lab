@@ -373,6 +373,10 @@ input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 4px 
   border: 1px solid #bbf7d0;
 }
 
+tr[data-active="true"] {
+  background: var(--danger-soft, #eef2ff);
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

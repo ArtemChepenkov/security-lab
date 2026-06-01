@@ -2,13 +2,15 @@ import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { startK8sScan, startKubeBenchScan } from '../../api/scan';
 import { Button } from '../../components/Button';
+import type { ScanItem } from '../../types';
+import { LaunchedScansTable } from './LaunchedScansTable';
 import { ScanFindingsPanel } from './ScanFindingsPanel';
 import { useScanFindings } from './useScanFindings';
+import { useScansOfType } from './useScansOfType';
 
-interface ScanResult {
-    scan_id: string;
-    label: string;
-}
+// kube-bench и trivy-k8s по всему кластеру
+const isClusterScan = (s: ScanItem) =>
+    s.release === 'kube-bench' || (s.release === 'trivy-k8s' && s.namespace === 'all-namespaces');
 
 export function ClusterScanPage() {
     const { scanId } = useParams();
@@ -17,16 +19,16 @@ export function ClusterScanPage() {
     const [error, setError] = useState<string | null>(null);
     const [trivyLoading, setTrivyLoading] = useState(false);
     const [benchLoading, setBenchLoading] = useState(false);
-    const [results, setResults] = useState<ScanResult[]>([]);
 
     const { data, loading: findingsLoading, error: findingsError } = useScanFindings(scanId ?? null);
+    const { scans, reload } = useScansOfType(isClusterScan);
 
     async function handleTrivyCluster() {
         setError(null);
         try {
             setTrivyLoading(true);
             const res = await startK8sScan(); // без namespace = весь кластер
-            setResults((prev) => [{ scan_id: res.scan_id, label: 'Trivy (весь кластер)' }, ...prev]);
+            reload();
             navigate(`/scans/cluster/${res.scan_id}`);
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to start trivy cluster scan');
@@ -40,7 +42,7 @@ export function ClusterScanPage() {
         try {
             setBenchLoading(true);
             const res = await startKubeBenchScan();
-            setResults((prev) => [{ scan_id: res.scan_id, label: 'kube-bench (CIS)' }, ...prev]);
+            reload();
             navigate(`/scans/cluster/${res.scan_id}`);
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to start kube-bench scan');
@@ -82,31 +84,11 @@ export function ClusterScanPage() {
                 </article>
             </div>
 
-            {!!results.length && (
-                <div className="card table-card table-card--full">
-                    <div className="table-toolbar"><h2>Запущенные сканы</h2></div>
-                    <div className="table-scroll">
-                        <table>
-                            <thead>
-                            <tr><th>Scan</th><th>Тип</th><th></th></tr>
-                            </thead>
-                            <tbody>
-                            {results.map((r) => (
-                                <tr key={r.scan_id}>
-                                    <td>{r.scan_id}</td>
-                                    <td>{r.label}</td>
-                                    <td>
-                                        <button className="link-button" type="button" onClick={() => navigate(`/scans/cluster/${r.scan_id}`)}>
-                                            Показать результаты
-                                        </button>
-                                    </td>
-                                </tr>
-                            ))}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            )}
+            <LaunchedScansTable
+                scans={scans}
+                activeId={scanId}
+                onSelect={(id) => navigate(`/scans/cluster/${id}`)}
+            />
 
             {scanId && (
                 <ScanFindingsPanel data={data} loading={findingsLoading} error={findingsError} />

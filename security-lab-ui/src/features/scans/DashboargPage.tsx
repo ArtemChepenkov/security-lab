@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { getScans } from '../../api/scan';
+import { getScans, getScanStats } from '../../api/scan';
 import { StatusBadge } from '../../components/Badge';
 import type { ScanItem } from '../../types';
 import { formatDate } from '../../utils/format';
@@ -8,28 +8,36 @@ import { scanRoute } from './scanRoute';
 
 export function DashboardPage() {
     const [scans, setScans] = useState<ScanItem[]>([]);
-    const [total, setTotal] = useState(0);
+    const [statusCounts, setStatusCounts] = useState<{ total: number; by_status: Record<string, number> }>({
+        total: 0,
+        by_status: {},
+    });
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
         let alive = true;
-        getScans(1, 5)
-            .then((response) => {
+
+        // Последние 5 сканов — для таблицы; статистика — по всем сканам.
+        Promise.all([getScans(1, 5), getScanStats()])
+            .then(([scansRes, statsRes]) => {
                 if (!alive) return;
-                setScans(response.items || []);
-                setTotal(response.total || 0);
+                setScans(scansRes.items || []);
+                setStatusCounts(statsRes);
             })
             .finally(() => alive && setLoading(false));
+
         return () => { alive = false; };
     }, []);
 
     const stats = useMemo(() => {
-        const running = scans.filter((scan) => scan.status.toLowerCase() === 'running').length;
-        const failed = scans.filter((scan) => scan.status.toLowerCase() === 'failed').length;
-        let done = scans.filter((scan) => scan.status.toLowerCase() === 'done').length;
-        done += scans.filter((scan) => scan.status.toLowerCase() === 'created').length;
-        return { total, running, failed, done };
-    }, [scans, total]);
+        const by = statusCounts.by_status || {};
+        return {
+            total: statusCounts.total,
+            running: by.running ?? 0,
+            failed: by.failed ?? 0,
+            done: (by.done ?? 0) + (by.created ?? 0),
+        };
+    }, [statusCounts]);
 
     return (
         <section className="page">
