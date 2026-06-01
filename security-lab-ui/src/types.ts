@@ -10,6 +10,8 @@ export interface ScanItem {
     status: ScanStatus;
 }
 
+export type FindingType = 'vuln' | 'misconfig' | string;
+
 export interface Finding {
     id: number;
     scanner: string;
@@ -23,6 +25,7 @@ export interface Finding {
     cvss_score: number | null;
     description: string | null;
     references: string[];
+    finding_type?: FindingType;
 }
 
 export interface PaginatedResponse<T> {

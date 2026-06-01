@@ -15,7 +15,9 @@ export function AppLayout({ onOpenScanModal }: { onOpenScanModal: () => void }) 
 
                 <nav className="nav">
                     <NavLink to="/" end>Dashboard</NavLink>
-                    <NavLink to="/scans">Scans</NavLink>
+                    <NavLink to="/scans" end>Scans</NavLink>
+                    <NavLink to="/scans/k8s">K8s scan</NavLink>
+                    <NavLink to="/scans/cluster">Cluster scan</NavLink>
                     <NavLink to="/scans/compare">Compare</NavLink>
                 </nav>
             </aside>

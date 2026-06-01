@@ -6,6 +6,7 @@ import { EmptyState } from '../../components/EmptyState';
 import { Pagination } from '../../components/Pagination';
 import type { ScanItem } from '../../types';
 import { formatDate } from '../../utils/format';
+import { scanRoute } from './scanRoute';
 
 export function ScanList() {
     const [items, setItems] = useState<ScanItem[]>([]);
@@ -74,7 +75,7 @@ export function ScanList() {
                             <tbody>
                             {items.map((scan) => (
                                 <tr key={scan.id}>
-                                    <td><Link className="table-link" to={`/scans/${scan.id}`}>{scan.id}</Link></td>
+                                    <td><Link className="table-link" to={scanRoute(scan)}>{scan.id}</Link></td>
                                     <td>{scan.release || '—'}</td>
                                     <td>{scan.namespace || '—'}</td>
                                     <td><StatusBadge status={scan.status} /></td>

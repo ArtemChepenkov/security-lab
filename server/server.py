@@ -555,13 +555,27 @@ def parse_trivy_k8s_report(scan_id: str, data: Dict[str, Any]):
                 )
 
 
+def _cleanup_node_collector():
+    """
+    `trivy k8s` запускает в кластере job node-collector (namespace trivy-temp).
+    Если предыдущий скан был прерван, job остаётся и следующий запуск падает с
+    "node-collector-... already exists". Чистим остатки перед стартом.
+    """
+    run_cmd(
+        ["kubectl", "delete", "jobs,pods", "-n", "trivy-temp", "--all", "--ignore-not-found"],
+        timeout=60,
+    )
+
+
 def _run_k8s_scan_background(scan_id: str, namespace: Optional[str]):
     try:
+        _cleanup_node_collector()
+
+        # `trivy k8s` без флага namespace сканирует весь кластер (это поведение по умолчанию).
+        # Флага --all-namespaces в trivy нет.
         cmd = ["trivy", "k8s", "-f", "json", "--quiet"]
         if namespace:
             cmd += ["--include-namespaces", namespace]
-        else:
-            cmd += ["--all-namespaces"]
 
         res = run_cmd(cmd, timeout=600)
         if res["code"] != 0:
@@ -1007,6 +1021,40 @@ def list_scans(
     return {"items": [row_to_dict(r) for r in rows], "page": page, "page_size": page_size, "total": total}
 
 
+# Должен идти ДО /scan/{scan_id}, иначе "stats" попадёт в scan_id.
+@app.get("/scan/stats")
+def scan_stats():
+    """Агрегат по статусам всех сканов (для дашборда)."""
+    conn = get_conn()
+    rows = conn.execute("SELECT status, COUNT(*) AS c FROM scans GROUP BY status").fetchall()
+    conn.close()
+
+    by_status: Dict[str, int] = {}
+    total = 0
+    for r in rows:
+        st = (r["status"] or "unknown").lower()
+        by_status[st] = by_status.get(st, 0) + r["c"]
+        total += r["c"]
+
+    return {"total": total, "by_status": by_status}
+
+
+@app.get("/namespaces")
+def list_namespaces():
+    """Список namespace'ов кластера — для выбора при сканировании."""
+    res = run_cmd(["kubectl", "get", "namespaces", "-o", "json"], timeout=30)
+    try:
+        data = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return {"items": []}
+    names = [
+        item["metadata"]["name"]
+        for item in data.get("items", [])
+        if item.get("metadata", {}).get("name")
+    ]
+    return {"items": sorted(names)}
+
+
 @app.get("/scan/{scan_id}/sbom")
 def get_scan_sbom(scan_id: str, image: Optional[str] = None):
     conn = get_conn()
@@ -1113,6 +1161,7 @@ def scan_details(
         SELECT
             f.id, f.scanner, f.severity, f.target, f.title, f.cve_id,
             f.pkg_name, f.installed_version, f.fixed_version,
+            f.finding_type,
             COALESCE(f.cvss_score, v.cvss_score) AS cvss_score,
             COALESCE(f.description, v.description) AS description,
             COALESCE(f.references_json, v.references_json) AS references_json
