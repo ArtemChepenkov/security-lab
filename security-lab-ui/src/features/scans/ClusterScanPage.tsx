@@ -1,7 +1,9 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { startK8sScan, startKubeBenchScan } from '../../api/scan';
 import { Button } from '../../components/Button';
+import { ScanFindingsPanel } from './ScanFindingsPanel';
+import { useScanFindings } from './useScanFindings';
 
 interface ScanResult {
     scan_id: string;
@@ -9,21 +11,23 @@ interface ScanResult {
 }
 
 export function ClusterScanPage() {
+    const { scanId } = useParams();
+    const navigate = useNavigate();
+
     const [error, setError] = useState<string | null>(null);
     const [trivyLoading, setTrivyLoading] = useState(false);
     const [benchLoading, setBenchLoading] = useState(false);
     const [results, setResults] = useState<ScanResult[]>([]);
 
-    function addResult(scan_id: string, label: string) {
-        setResults((prev) => [{ scan_id, label }, ...prev]);
-    }
+    const { data, loading: findingsLoading, error: findingsError } = useScanFindings(scanId ?? null);
 
     async function handleTrivyCluster() {
         setError(null);
         try {
             setTrivyLoading(true);
             const res = await startK8sScan(); // без namespace = весь кластер
-            addResult(res.scan_id, 'Trivy (весь кластер)');
+            setResults((prev) => [{ scan_id: res.scan_id, label: 'Trivy (весь кластер)' }, ...prev]);
+            navigate(`/scans/cluster/${res.scan_id}`);
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to start trivy cluster scan');
         } finally {
@@ -36,7 +40,8 @@ export function ClusterScanPage() {
         try {
             setBenchLoading(true);
             const res = await startKubeBenchScan();
-            addResult(res.scan_id, 'kube-bench (CIS)');
+            setResults((prev) => [{ scan_id: res.scan_id, label: 'kube-bench (CIS)' }, ...prev]);
+            navigate(`/scans/cluster/${res.scan_id}`);
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to start kube-bench scan');
         } finally {
@@ -62,9 +67,7 @@ export function ClusterScanPage() {
             <div className="summary-grid">
                 <article className="metric-card">
                     <span>Trivy — весь кластер</span>
-                    <p className="muted">
-                        CVE в образах + мисконфиги по всем namespace.
-                    </p>
+                    <p className="muted">CVE в образах + мисконфиги по всем namespace.</p>
                     <Button onClick={handleTrivyCluster} disabled={trivyLoading}>
                         {trivyLoading ? 'Запуск…' : 'Запустить Trivy'}
                     </Button>
@@ -72,9 +75,7 @@ export function ClusterScanPage() {
 
                 <article className="metric-card">
                     <span>kube-bench — CIS</span>
-                    <p className="muted">
-                        Проверка настроек кластера на соответствие CIS Kubernetes Benchmark.
-                    </p>
+                    <p className="muted">Проверка настроек кластера на соответствие CIS Kubernetes Benchmark.</p>
                     <Button onClick={handleKubeBench} disabled={benchLoading}>
                         {benchLoading ? 'Запуск…' : 'Запустить kube-bench'}
                     </Button>
@@ -83,17 +84,11 @@ export function ClusterScanPage() {
 
             {!!results.length && (
                 <div className="card table-card table-card--full">
-                    <div className="table-toolbar">
-                        <h2>Запущенные сканы</h2>
-                    </div>
+                    <div className="table-toolbar"><h2>Запущенные сканы</h2></div>
                     <div className="table-scroll">
                         <table>
                             <thead>
-                            <tr>
-                                <th>Scan</th>
-                                <th>Тип</th>
-                                <th>Результаты</th>
-                            </tr>
+                            <tr><th>Scan</th><th>Тип</th><th></th></tr>
                             </thead>
                             <tbody>
                             {results.map((r) => (
@@ -101,19 +96,20 @@ export function ClusterScanPage() {
                                     <td>{r.scan_id}</td>
                                     <td>{r.label}</td>
                                     <td>
-                                        <Link className="table-link" to={`/scans/${r.scan_id}`}>
-                                            Открыть →
-                                        </Link>
+                                        <button className="link-button" type="button" onClick={() => navigate(`/scans/cluster/${r.scan_id}`)}>
+                                            Показать результаты
+                                        </button>
                                     </td>
                                 </tr>
                             ))}
                             </tbody>
                         </table>
                     </div>
-                    <p className="muted">
-                        Сканы идут в фоне. Открой результаты через минуту — статус станет «done».
-                    </p>
                 </div>
+            )}
+
+            {scanId && (
+                <ScanFindingsPanel data={data} loading={findingsLoading} error={findingsError} />
             )}
         </section>
     );

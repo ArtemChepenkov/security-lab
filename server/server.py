@@ -1113,6 +1113,7 @@ def scan_details(
         SELECT
             f.id, f.scanner, f.severity, f.target, f.title, f.cve_id,
             f.pkg_name, f.installed_version, f.fixed_version,
+            f.finding_type,
             COALESCE(f.cvss_score, v.cvss_score) AS cvss_score,
             COALESCE(f.description, v.description) AS description,
             COALESCE(f.references_json, v.references_json) AS references_json

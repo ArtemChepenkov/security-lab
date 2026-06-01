@@ -4,6 +4,7 @@ import { getScans } from '../../api/scan';
 import { StatusBadge } from '../../components/Badge';
 import type { ScanItem } from '../../types';
 import { formatDate } from '../../utils/format';
+import { scanRoute } from './scanRoute';
 
 export function DashboardPage() {
     const [scans, setScans] = useState<ScanItem[]>([]);
@@ -56,7 +57,7 @@ export function DashboardPage() {
                             <tbody>
                             {scans.map((scan) => (
                                 <tr key={scan.id}>
-                                    <td><Link className="table-link" to={`/scans/${scan.id}`}>{scan.id}</Link></td>
+                                    <td><Link className="table-link" to={scanRoute(scan)}>{scan.id}</Link></td>
                                     <td>{scan.release || '—'}</td>
                                     <td><StatusBadge status={scan.status} /></td>
                                     <td>{formatDate(scan.ts)}</td>

@@ -9,7 +9,7 @@ import type { Finding, FindingSeverity, ScanDetailsResponse, VulnerabilityDetail
 import { formatDate, formatNumber } from '../../utils/format';
 
 const severities: Array<FindingSeverity | 'ALL'> = ['ALL', 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'UNKNOWN'];
-const scanners = ['ALL', 'trivy', 'grype', 'trivy-k8s', 'kube-bench'] as const;
+const scanners = ['ALL', 'trivy', 'grype'] as const;
 type ScannerFilter = (typeof scanners)[number];
 
 export function ScanDetailsPage() {

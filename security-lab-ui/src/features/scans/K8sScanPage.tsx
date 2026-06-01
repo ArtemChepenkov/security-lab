@@ -1,22 +1,34 @@
-import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { startK8sScan } from '../../api/scan';
 import { Button } from '../../components/Button';
+import { ScanFindingsPanel } from './ScanFindingsPanel';
+import { useScanFindings } from './useScanFindings';
 
 export function K8sScanPage() {
+    const { scanId } = useParams();
+    const navigate = useNavigate();
+
     const [namespace, setNamespace] = useState('');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [result, setResult] = useState<{ scan_id: string; namespace: string } | null>(null);
+
+    const { data, loading: findingsLoading, error: findingsError } = useScanFindings(scanId ?? null);
+
+    // Если зашли на /scans/k8s/:scanId — подставим namespace из загруженного скана.
+    useEffect(() => {
+        if (data?.scan?.namespace && data.scan.namespace !== 'all-namespaces') {
+            setNamespace(data.scan.namespace);
+        }
+    }, [data?.scan?.namespace]);
 
     async function handleScan() {
         setError(null);
-        setResult(null);
-
         try {
             setLoading(true);
             const res = await startK8sScan(namespace.trim() || undefined);
-            setResult({ scan_id: res.scan_id, namespace: res.namespace });
+            // Переходим на URL с id — хук подхватит и начнёт опрашивать.
+            navigate(`/scans/k8s/${res.scan_id}`);
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to start k8s scan');
         } finally {
@@ -56,16 +68,8 @@ export function K8sScanPage() {
                 </div>
             </div>
 
-            {result && (
-                <div className="alert alert--success">
-                    Скан запущен: <strong>{result.scan_id}</strong> ({result.namespace}).{' '}
-                    <Link className="table-link" to={`/scans/${result.scan_id}`}>
-                        Открыть результаты →
-                    </Link>
-                    <p className="muted">
-                        Скан идёт в фоне. Обнови страницу деталей через минуту, статус станет «done».
-                    </p>
-                </div>
+            {scanId && (
+                <ScanFindingsPanel data={data} loading={findingsLoading} error={findingsError} />
             )}
         </section>
     );

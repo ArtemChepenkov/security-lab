@@ -24,7 +24,9 @@ export default function App() {
                     <Route index element={<DashboardPage />} />
                     <Route path="scans" element={<ScanList />} />
                     <Route path="scans/k8s" element={<K8sScanPage />} />
+                    <Route path="scans/k8s/:scanId" element={<K8sScanPage />} />
                     <Route path="scans/cluster" element={<ClusterScanPage />} />
+                    <Route path="scans/cluster/:scanId" element={<ClusterScanPage />} />
                     <Route path="scans/compare" element={<CompareScansPage/>}/>
                     <Route path="scans/:scanId" element={<ScanDetailsPage />} />
                     <Route path="scans/:scanId/sbom" element={<SbomPage />} />
