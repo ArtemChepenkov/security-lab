@@ -1,0 +1,82 @@
+---
+- name: Install and run kube-bench on Kubernetes cluster
+  hosts: masters
+  become: true
+
+  vars:
+    kube_bench_version: "0.14.0"
+    kube_bench_tar: "kube-bench_{{ kube_bench_version }}_linux_amd64.tar.gz"
+    kube_bench_url: "https://github.com/aquasecurity/kube-bench/releases/download/v{{ kube_bench_version }}/{{ kube_bench_tar }}"
+    kube_bench_install_dir: "/usr/local/bin"
+    kube_bench_cfg_dir: "cfg"
+    kubeconfig_path: "{{ ansible_env.HOME }}.kube/config"
+    kube_bench_json: "/var/artifacts/kube-bench/kube-bench-cluster.json"
+    benchmark_version: "cis-1.9"
+    targets: "master,controlplane,etcd,node"
+
+  tasks:
+    - name: Ensure temporary directory exists
+      file:
+        path: "/tmp/kube-bench"
+        state: directory
+        mode: "0755"
+
+    - name: Check if kube-bench is already installed
+      stat:
+        path: "{{ kube_bench_install_dir }}/kube-bench"
+      register: kube_bench_bin
+
+    - name: Download kube-bench if not installed
+      get_url:
+        url: "{{ kube_bench_url }}"
+        dest: "/tmp/kube-bench/{{ kube_bench_tar }}"
+        mode: '0755'
+      when: not kube_bench_bin.stat.exists
+
+    - name: Extract kube-bench if not installed
+      unarchive:
+        src: "/tmp/kube-bench/{{ kube_bench_tar }}"
+        dest: "/tmp/kube-bench/"
+        remote_src: yes
+      when: not kube_bench_bin.stat.exists
+
+    - name: Move kube-bench binary to /usr/local/bin
+      copy:
+        src: "/tmp/kube-bench/kube-bench"
+        dest: "{{ kube_bench_install_dir }}/kube-bench"
+        mode: '0755'
+      when: not kube_bench_bin.stat.exists
+
+    - name: Backup old kube-bench report if it exists
+      shell: |
+        if [ -f "{{ kube_bench_json }}" ]; then
+          mv "{{ kube_bench_json }}" "{{ kube_bench_json }}.bak_$(date +%Y%m%d%H%M%S)"
+        fi
+      args:
+        executable: /bin/bash
+
+    - name: Check Kubernetes connectivity
+      shell: kubectl version --kubeconfig {{ kubeconfig_path }} --short
+      register: k8s_check
+      ignore_errors: yes
+      args:
+        executable: /bin/bash
+
+    - name: Warn if Kubernetes is unreachable
+      debug:
+        msg: "Warning: Kubernetes server is unreachable. kube-bench will assume default version 1.18."
+      when: k8s_check.rc != 0
+
+    - name: Run kube-bench and save JSON report
+      shell: |
+        KUBECONFIG={{ kubeconfig_path }} \
+        {{ kube_bench_install_dir }}/kube-bench run \
+          --benchmark {{ benchmark_version }} \
+          --targets {{ targets }} \
+          --json > {{ kube_bench_json }}
+      args:
+        executable: /bin/bash
+
+    - name: Show report file path
+      debug:
+        msg: "kube-bench JSON report saved to {{ kube_bench_json }}"
