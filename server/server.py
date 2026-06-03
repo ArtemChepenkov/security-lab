@@ -307,15 +307,22 @@ def upsert_vulnerability(
             published_at, modified_at, source, references_json, raw_json, updated_at
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(cve_id) DO UPDATE SET
-            severity=excluded.severity,
-            cvss_score=COALESCE(excluded.cvss_score, vulnerabilities.cvss_score),
-            title=COALESCE(excluded.title, vulnerabilities.title),
-            description=COALESCE(excluded.description, vulnerabilities.description),
-            published_at=COALESCE(excluded.published_at, vulnerabilities.published_at),
-            modified_at=COALESCE(excluded.modified_at, vulnerabilities.modified_at),
-            source=excluded.source,
-            references_json=COALESCE(excluded.references_json, vulnerabilities.references_json),
-            raw_json=COALESCE(excluded.raw_json, vulnerabilities.raw_json),
+            -- Дополняем, а не перетираем: уже записанные значения сохраняются,
+            -- новые данные заполняют только пустые поля.
+            -- severity улучшается только если раньше был UNKNOWN/пусто.
+            severity=CASE
+                WHEN vulnerabilities.severity IS NULL OR vulnerabilities.severity = 'UNKNOWN'
+                    THEN excluded.severity
+                ELSE vulnerabilities.severity
+            END,
+            cvss_score=COALESCE(vulnerabilities.cvss_score, excluded.cvss_score),
+            title=COALESCE(vulnerabilities.title, excluded.title),
+            description=COALESCE(vulnerabilities.description, excluded.description),
+            published_at=COALESCE(vulnerabilities.published_at, excluded.published_at),
+            modified_at=COALESCE(vulnerabilities.modified_at, excluded.modified_at),
+            source=COALESCE(vulnerabilities.source, excluded.source),
+            references_json=COALESCE(NULLIF(vulnerabilities.references_json, '[]'), excluded.references_json),
+            raw_json=COALESCE(NULLIF(vulnerabilities.raw_json, '{}'), excluded.raw_json),
             updated_at=excluded.updated_at
     """, (
         cve_id,
@@ -1004,17 +1011,35 @@ def kube_bench_details(
     }
 
 
+# Категории сканов по полю release/namespace:
+#   image     — сканы образов (helm chart): release не kube-bench и не trivy-k8s
+#   namespace — trivy-k8s по конкретному namespace
+#   cluster   — trivy-k8s по всему кластеру (namespace = all-namespaces)
+#   policy    — kube-bench (CIS)
+#   all       — все сканы
+SCAN_CATEGORY_FILTERS = {
+    "image": "release NOT IN ('kube-bench', 'trivy-k8s')",
+    "namespace": "release = 'trivy-k8s' AND namespace != 'all-namespaces'",
+    "cluster": "release = 'trivy-k8s' AND namespace = 'all-namespaces'",
+    "policy": "release = 'kube-bench'",
+    "all": "1=1",
+}
+
+
 @app.get("/scan/list")
 def list_scans(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
+    category: str = Query("image"),
 ):
     page, page_size, offset = build_pagination(page, page_size)
+    where = SCAN_CATEGORY_FILTERS.get((category or "image").lower(), SCAN_CATEGORY_FILTERS["image"])
+
     conn = get_conn()
     cur = conn.cursor()
-    total = cur.execute("SELECT COUNT(*) AS c FROM scans").fetchone()["c"]
+    total = cur.execute(f"SELECT COUNT(*) AS c FROM scans WHERE {where}").fetchone()["c"]
     rows = cur.execute(
-        "SELECT id, ts, namespace, release, status FROM scans ORDER BY ts DESC LIMIT ? OFFSET ?",
+        f"SELECT id, ts, namespace, release, status FROM scans WHERE {where} ORDER BY ts DESC LIMIT ? OFFSET ?",
         (page_size, offset),
     ).fetchall()
     conn.close()
