@@ -175,6 +175,8 @@ export async function getScanDetails(
         throw new Error(await response.text());
     }
 
+    await syncNvdForScan(scanId);
+
     return response.json();
 }
 
@@ -260,6 +262,20 @@ export async function getVulnerabilityDetails( cveId: string ): Promise<Vulnerab
     }
 
     return response.json();
+}
+
+export async function syncNvdForScan(scanId: string): Promise<any> {
+    const response = await fetch(
+        `${API_URL}/scan/${encodeURIComponent(scanId)}/sync-nvd`,
+        {
+            method: "POST",
+            headers: API_KEY ? { "X-API-Key": API_KEY } : undefined,
+        }
+    );
+
+    if (!response.ok) {
+        throw new Error(await response.text());
+    }
 }
 
 export async function syncNvdCve( cveId: string ):
