@@ -2,10 +2,6 @@ import { useEffect, useState } from 'react';
 import { getScanDetails } from '../../api/scan';
 import type { ScanDetailsResponse } from '../../types';
 
-/**
- * Загружает детали скана и автоматически опрашивает бэкенд, пока скан
- * в статусе running/created. Используется на страницах k8s и cluster сканов.
- */
 export function useScanFindings(scanId: string | null) {
     const [data, setData] = useState<ScanDetailsResponse | null>(null);
     const [loading, setLoading] = useState(false);

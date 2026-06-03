@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import {deleteScan, getScanDetails, getNvdForCve } from '../../api/scan';
+import {deleteScan, getScanDetails} from '../../api/scan';
 import { SeverityBadge, StatusBadge } from '../../components/Badge';
 import { Button } from '../../components/Button';
 import { EmptyState } from '../../components/EmptyState';
 import { Pagination } from '../../components/Pagination';
 import type { Finding, FindingSeverity, ScanDetailsResponse, VulnerabilityDetails} from '../../types';
 import { formatDate, formatNumber } from '../../utils/format';
+import {VulnerabilityDetailsModal} from "./VulnerabilityDetailsModal";
 
 const severities: Array<FindingSeverity | 'ALL'> = ['ALL', 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'UNKNOWN'];
 const scanners = ['ALL', 'trivy', 'grype'] as const;
@@ -25,9 +26,7 @@ export function ScanDetailsPage() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
-    const [nvdOpen, setNvdOpen] = useState(false);
-    const [nvdLoading, setNvdLoading] = useState(false);
-    const [nvdData, setNvdData] = useState<VulnerabilityDetails | null>(null);
+    const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null);
 
     useEffect(() => {
         let alive = true;
@@ -54,20 +53,8 @@ export function ScanDetailsPage() {
         }
     }
 
-    async function handleOpenNvd(cveId: string) {
-        try {
-            setError(null);
-            setNvdLoading(true);
-            setNvdOpen(true);
-            setNvdData(null);
-
-            const res = await getNvdForCve(cveId);
-            setNvdData(res)
-        }  catch (err) {
-            setError(err instanceof Error ? err.message : 'Failed to load NVD data');
-        } finally {
-            setNvdLoading(false);
-        }
+    function handleOpenNvd(finding: Finding) {
+        setSelectedFinding(finding);
     }
 
     const findings = data?.findings.items ?? [];
@@ -154,7 +141,7 @@ export function ScanDetailsPage() {
                                                         <button
                                                             className="link-button"
                                                             type="button"
-                                                            onClick={() => handleOpenNvd(finding.cve_id!)}
+                                                            onClick={() => handleOpenNvd(finding)}
                                                         >
                                                             {finding.cve_id}
                                                         </button>
@@ -179,75 +166,12 @@ export function ScanDetailsPage() {
                 </>
             )}
 
-            {nvdOpen && (
-                <div className="modal-backdrop" onMouseDown={() => setNvdOpen(false)}>
-                    <section
-                        className="modal modal--wide"
-                        onMouseDown={(event) => event.stopPropagation()}
-                    >
-                        <header className="modal__header">
-                            <h2>{nvdData?.cve_id || 'NVD details'}</h2>
-                            <Button variant="ghost" onClick={() => setNvdOpen(false)}>
-                                ×
-                            </Button>
-                        </header>
-
-                        <div className="modal__body">
-                            {nvdLoading && <div className="loader">Loading NVD data…</div>}
-
-                            {nvdData && (
-                                <div className="nvd-details">
-                                    <div className="summary-grid">
-                                        <article className="metric-card">
-                                            <span>Severity</span>
-                                            <strong>
-                                                <SeverityBadge severity={nvdData.severity} />
-                                            </strong>
-                                        </article>
-
-                                        <article className="metric-card">
-                                            <span>CVSS</span>
-                                            <strong>{formatNumber(nvdData.cvss_score)}</strong>
-                                        </article>
-
-                                        <article className="metric-card">
-                                            <span>Source</span>
-                                            <strong>{nvdData.source}</strong>
-                                        </article>
-                                    </div>
-
-                                    <div className="card nvd-section">
-                                        <h3>Description</h3>
-                                        <p>{nvdData.description || 'No description from NVD.'}</p>
-                                    </div>
-
-                                    <div className="card nvd-section">
-                                        <h3>Dates</h3>
-                                        <p>Published: {nvdData.published_at || '—'}</p>
-                                        <p>Modified: {nvdData.modified_at || '—'}</p>
-                                    </div>
-
-                                    <div className="card nvd-section">
-                                        <h3>References</h3>
-                                        {!nvdData.references.length ? (
-                                            <p>No references.</p>
-                                        ) : (
-                                            <ul>
-                                                {nvdData.references.map((ref) => (
-                                                    <li key={ref}>
-                                                        <a href={ref} target="_blank" rel="noreferrer">
-                                                            {ref}
-                                                        </a>
-                                                    </li>
-                                                ))}
-                                            </ul>
-                                        )}
-                                    </div>
-                                </div>
-                            )}
-                        </div>
-                    </section>
-                </div>
+            {selectedFinding && (
+                <VulnerabilityDetailsModal
+                    finding={selectedFinding}
+                    onClose={() => setSelectedFinding(null)}
+                    onError={setError}
+                />
             )}
         </section>
     );

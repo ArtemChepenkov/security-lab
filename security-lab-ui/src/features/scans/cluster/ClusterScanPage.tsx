@@ -1,14 +1,13 @@
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { startK8sScan, startKubeBenchScan } from '../../api/scan';
-import { Button } from '../../components/Button';
-import type { ScanItem } from '../../types';
-import { LaunchedScansTable } from './LaunchedScansTable';
-import { ScanFindingsPanel } from './ScanFindingsPanel';
-import { useScanFindings } from './useScanFindings';
-import { useScansOfType } from './useScansOfType';
+import { startK8sScan, startKubeBenchScan } from '../../../api/scan';
+import { Button } from '../../../components/Button';
+import type { ScanItem } from '../../../types';
+import { LaunchedScansTable } from '../LaunchedScansTable';
+import { ScanFindingsPanel } from '../ScanFindingsPanel';
+import { useScanFindings } from '../useScanFindings';
+import { useScansOfType } from '../useScansOfType';
 
-// kube-bench и trivy-k8s по всему кластеру
 const isClusterScan = (s: ScanItem) =>
     s.release === 'kube-bench' || (s.release === 'trivy-k8s' && s.namespace === 'all-namespaces');
 
@@ -67,32 +66,38 @@ export function ClusterScanPage() {
             {error && <div className="alert alert--error">{error}</div>}
 
             <div className="summary-grid">
-                <article className="metric-card">
-                    <span>Trivy — весь кластер</span>
-                    <p className="muted">CVE в образах + мисконфиги по всем namespace.</p>
-                    <Button onClick={handleTrivyCluster} disabled={trivyLoading}>
-                        {trivyLoading ? 'Запуск…' : 'Запустить Trivy'}
-                    </Button>
-                </article>
+                <Button onClick={handleTrivyCluster} disabled={trivyLoading}>
+                    {trivyLoading ? 'Запуск…' : 'Запустить Trivy'}
+                </Button>
 
-                <article className="metric-card">
-                    <span>kube-bench — CIS</span>
-                    <p className="muted">Проверка настроек кластера на соответствие CIS Kubernetes Benchmark.</p>
-                    <Button onClick={handleKubeBench} disabled={benchLoading}>
-                        {benchLoading ? 'Запуск…' : 'Запустить kube-bench'}
-                    </Button>
-                </article>
+                <Button onClick={handleKubeBench} disabled={benchLoading}>
+                    {benchLoading ? 'Запуск…' : 'Запустить kube-bench'}
+                </Button>
             </div>
 
-            <LaunchedScansTable
-                scans={scans}
-                activeId={scanId}
-                onSelect={(id) => navigate(`/scans/cluster/${id}`)}
-            />
+            {scanId ?  (
+                <>
+                    <Button
+                        variant="secondary"
+                        onClick={() => navigate('/scans/cluster')}
+                    >
+                        ← Назад к списку
+                    </Button>
 
-            {scanId && (
-                <ScanFindingsPanel data={data} loading={findingsLoading} error={findingsError} />
-            )}
+                    <ScanFindingsPanel
+                        data={data}
+                        loading={findingsLoading}
+                        error={findingsError}
+                    />
+                </>
+            ) :  (
+                <LaunchedScansTable
+                    scans={scans}
+                    activeId={scanId}
+                    onSelect={(id) => navigate(`/scans/cluster/${id}`)}
+                />
+            ) }
+
         </section>
     );
 }

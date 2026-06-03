@@ -143,7 +143,6 @@ button, input, select { font: inherit; }
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  box-shadow: var(--shadow);
 }
 
 .summary-grid {
@@ -153,7 +152,7 @@ button, input, select { font: inherit; }
 }
 
 .metric-card {
-  padding: 20px;
+  padding: 10px;
 }
 
 .metric-card span {
@@ -437,7 +436,8 @@ tr[data-active="true"] {
   background: white;
   border-radius: 22px;
   box-shadow: 0 30px 90px rgba(0, 0, 0, 0.24);
-  height: 100vh;
+  max-height: 100vh;
+  height: fit-content;
 }
 
 .modal__header {

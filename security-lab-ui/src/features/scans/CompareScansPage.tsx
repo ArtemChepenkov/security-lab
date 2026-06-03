@@ -2,8 +2,9 @@ import {useState, useMemo, useEffect} from "react";
 import {EmptyState} from "../../components/EmptyState";
 import {Button} from "../../components/Button";
 import {getScanDiff, getScans} from "../../api/scan";
-import {DiffResponse, ScanItem} from "../../types";
+import {DiffResponse, ScanItem, Finding} from "../../types";
 import {formatDate} from "../../utils/format";
+import {VulnerabilityDetailsModal} from "./VulnerabilityDetailsModal";
 
 export function CompareScansPage() {
     const [error, setError] = useState<string | null>(null);
@@ -14,6 +15,8 @@ export function CompareScansPage() {
     const [leftScanId, setLeftScanId] = useState("");
     const [rightScanId, setRightScanId] = useState("");
     const [diff, setDiff] = useState<DiffResponse | null>(null);
+
+    const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null);
 
     useEffect(() => {
         let alive = true;
@@ -82,6 +85,8 @@ export function CompareScansPage() {
         } finally {
             setComparing(false);
         }
+
+        console.log(diff)
     }
 
     return (
@@ -176,8 +181,17 @@ export function CompareScansPage() {
                                         <table>
                                             <tbody>
                                             {diff.fixed.map((item) => (
-                                                <tr key={item}>
-                                                    <td>{item}</td>
+                                                <tr key={item.id}>
+                                                    <td>
+                                                        <button
+                                                            className="link-button"
+                                                            type="button"
+                                                            onClick={() => setSelectedFinding(item)}
+                                                        >
+                                                            {item.cve_id || item.title}
+                                                        </button>
+                                                    </td>
+                                                    <td>{item.title}</td>
                                                 </tr>
                                             ))}
                                             </tbody>
@@ -198,8 +212,17 @@ export function CompareScansPage() {
                                         <table>
                                             <tbody>
                                             {diff.new.map((item) => (
-                                                <tr key={item}>
-                                                    <td>{item}</td>
+                                                <tr key={item.id}>
+                                                    <td>
+                                                        <button
+                                                            className="link-button"
+                                                            type="button"
+                                                            onClick={() => setSelectedFinding(item)}
+                                                        >
+                                                            {item.cve_id || item.title}
+                                                        </button>
+                                                    </td>
+                                                    <td>{item.title}</td>
                                                 </tr>
                                             ))}
                                             </tbody>
@@ -212,6 +235,13 @@ export function CompareScansPage() {
                 </>
             ) : null}
 
+            {selectedFinding && (
+                <VulnerabilityDetailsModal
+                    finding={selectedFinding}
+                    onClose={() => setSelectedFinding(null)}
+                    onError={setError}
+                />
+            )}
         </section>
     )
 }

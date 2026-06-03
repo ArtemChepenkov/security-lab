@@ -66,6 +66,6 @@ export interface SbomItem {
 }
 
 export interface DiffResponse {
-    fixed: string[];
-    new: string[];
+    fixed: Finding[];
+    new: Finding[];
 }

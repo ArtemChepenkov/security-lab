@@ -2,13 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import { getScans } from '../../api/scan';
 import type { ScanItem } from '../../types';
 
-/**
- * Загружает сканы и оставляет только подходящие под predicate.
- * Пока среди них есть running/created — периодически опрашивает бэкенд,
- * чтобы статус и счётчики обновлялись сами.
- *
- * predicate должен быть стабильным (объявлен вне компонента).
- */
 export function useScansOfType(predicate: (scan: ScanItem) => boolean) {
     const [scans, setScans] = useState<ScanItem[]>([]);
     const [reloadKey, setReloadKey] = useState(0);
