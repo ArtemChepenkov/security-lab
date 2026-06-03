@@ -9,8 +9,8 @@ import { ScanList} from './features/scans/ScanList';
 import { SbomPage } from './features/sbom/SbomPage';
 import { VulnerabilitiesPage } from './features/vulnerabilities/VulnerabilitiesPage';
 import {CompareScansPage} from "./features/scans/CompareScansPage";
-import { K8sScanPage } from './features/scans/K8sScanPage';
-import { ClusterScanPage } from './features/scans/ClusterScanPage';
+import { K8sScanPage } from './features/scans/cluster/K8sScanPage';
+import { ClusterScanPage } from './features/scans/cluster/ClusterScanPage';
 
 import './styles/app.css';
 

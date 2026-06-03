@@ -1097,17 +1097,58 @@ def diff(scan1: str, scan2: str):
     conn = get_conn()
     cur = conn.cursor()
 
-    def _cves(scan_id: str):
+    def _findings(scan_id: str):
         rows = cur.execute(
-            "SELECT COALESCE(cve_id, title) AS key FROM scan_findings WHERE scan_id=?",
+            """
+            SELECT
+                f.id,
+                f.scanner,
+                f.severity,
+                f.target,
+                f.title,
+                f.cve_id,
+                f.pkg_name,
+                f.installed_version,
+                f.fixed_version,
+                f.finding_type,
+                COALESCE(f.cvss_score, v.cvss_score) AS cvss_score,
+                COALESCE(f.description, v.description) AS description,
+                COALESCE(f.references_json, v.references_json) AS references_json,
+                COALESCE(f.cve_id, f.title) AS diff_key
+            FROM scan_findings f
+            LEFT JOIN vulnerabilities v ON v.cve_id = f.cve_id
+            WHERE f.scan_id = ?
+            """,
             (scan_id,),
         ).fetchall()
-        return {r["key"] for r in rows if r["key"]}
 
-    f1, f2 = _cves(scan1), _cves(scan2)
+        result = {}
+
+        for row in rows:
+            key = row["diff_key"]
+            if not key:
+                continue
+
+            item = row_to_dict(row)
+            item.pop("diff_key", None)
+            item["references"] = parse_json_list(item.pop("references_json", None))
+
+            result[key] = item
+
+        return result
+
+    f1 = _findings(scan1)
+    f2 = _findings(scan2)
+
     conn.close()
-    return {"fixed": list(f1 - f2), "new": list(f2 - f1)}
 
+    fixed_keys = set(f1.keys()) - set(f2.keys())
+    new_keys = set(f2.keys()) - set(f1.keys())
+
+    return {
+        "fixed": [f1[key] for key in sorted(fixed_keys)],
+        "new": [f2[key] for key in sorted(new_keys)],
+    }
 
 @app.get("/scan/{scan_id}")
 def scan_details(

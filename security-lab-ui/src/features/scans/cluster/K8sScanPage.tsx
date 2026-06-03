@@ -1,15 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { getNamespaces, startK8sScan } from '../../api/scan';
-import { Button } from '../../components/Button';
-import type { ScanItem } from '../../types';
-import { LaunchedScansTable } from './LaunchedScansTable';
+import { getNamespaces, startK8sScan } from '../../../api/scan';
+import { Button } from '../../../components/Button';
+import type { ScanItem } from '../../../types';
+import { LaunchedScansTable } from '../LaunchedScansTable';
 import { NamespaceCombobox } from './NamespaceCombobox';
-import { ScanFindingsPanel } from './ScanFindingsPanel';
-import { useScanFindings } from './useScanFindings';
-import { useScansOfType } from './useScansOfType';
+import { ScanFindingsPanel } from '../ScanFindingsPanel';
+import { useScanFindings } from '../useScanFindings';
+import { useScansOfType } from '../useScansOfType';
 
-// trivy-k8s по конкретному namespace (не весь кластер)
 const isNamespaceScan = (s: ScanItem) =>
     s.release === 'trivy-k8s' && s.namespace !== 'all-namespaces';
 
@@ -61,7 +60,6 @@ export function K8sScanPage() {
             {error && <div className="alert alert--error">{error}</div>}
 
             <div className="card nvd-section">
-                <h2>Запустить скан namespace</h2>
                 <div className="form">
                     <label>
                         Namespace
@@ -78,14 +76,27 @@ export function K8sScanPage() {
                 </div>
             </div>
 
-            <LaunchedScansTable
-                scans={scans}
-                activeId={scanId}
-                onSelect={(id) => navigate(`/scans/k8s/${id}`)}
-            />
+            {scanId ?  (
+                <>
+                    <Button
+                        variant="secondary"
+                        onClick={() => navigate('/scans/k8s')}
+                    >
+                        ← Назад к списку
+                    </Button>
 
-            {scanId && (
-                <ScanFindingsPanel data={data} loading={findingsLoading} error={findingsError} />
+                    <ScanFindingsPanel
+                        data={data}
+                        loading={findingsLoading}
+                        error={findingsError}
+                    />
+                </>
+            ) : (
+                <LaunchedScansTable
+                    scans={scans}
+                    activeId={scanId}
+                    onSelect={(id) => navigate(`/scans/k8s/${id}`)}
+                />
             )}
         </section>
     );
