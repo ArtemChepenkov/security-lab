@@ -14,7 +14,7 @@ export function useScansOfType(predicate: (scan: ScanItem) => boolean) {
 
         async function load() {
             try {
-                const res = await getScans(1, 200);
+                const res = await getScans(1, 200, 'all');
                 if (!alive) return;
                 const filtered = (res.items || []).filter(predicate);
                 setScans(filtered);

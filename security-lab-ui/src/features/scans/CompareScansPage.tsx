@@ -24,7 +24,7 @@ export function CompareScansPage() {
         setLoading(true);
         setError(null);
 
-        getScans(1, 200)
+        getScans(1, 200, 'all')
             .then((response) => {
                 if (!alive) return;
 

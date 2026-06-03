@@ -46,8 +46,9 @@ export function ScanList() {
         <section className="page">
             <div className="page__header">
                 <div>
-                    <p className="eyebrow">Scans</p>
-                    <h1>Scan history</h1>
+                    <p className="eyebrow">Image scans</p>
+                    <h1>Сканы образов</h1>
+                    <p className="muted">Сканы helm-чартов: Trivy и Grype по образам подов.</p>
                 </div>
                 <input className="search" value={q} placeholder="Search by scan, namespace, release" onChange={(event) => { setQ(event.target.value); setPage(1); }} />
             </div>

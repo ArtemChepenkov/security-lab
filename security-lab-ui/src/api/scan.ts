@@ -101,7 +101,9 @@ export async function getScanStats(): Promise<{ total: number; by_status: Record
     return response.json();
 }
 
-export async function getScans( page?: number, pageSize?: number ): Promise<PaginatedResponse<ScanItem>> {
+export type ScanCategory = "image" | "namespace" | "cluster" | "policy" | "all";
+
+export async function getScans( page?: number, pageSize?: number, category?: ScanCategory ): Promise<PaginatedResponse<ScanItem>> {
     const params = new URLSearchParams();
 
     if (page !== undefined) {
@@ -110,6 +112,10 @@ export async function getScans( page?: number, pageSize?: number ): Promise<Pagi
 
     if (pageSize !== undefined) {
         params.set("page_size", String(pageSize));
+    }
+
+    if (category) {
+        params.set("category", category);
     }
 
     const query = params.toString();

@@ -18,7 +18,7 @@ export function DashboardPage() {
         let alive = true;
 
         // Последние 5 сканов — для таблицы; статистика — по всем сканам.
-        Promise.all([getScans(1, 5), getScanStats()])
+        Promise.all([getScans(1, 5, 'all'), getScanStats()])
             .then(([scansRes, statsRes]) => {
                 if (!alive) return;
                 setScans(scansRes.items || []);
